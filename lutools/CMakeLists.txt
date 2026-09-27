@@ -3,16 +3,18 @@ project(Sony2FujiLUT VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_OBJCXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 选项
 option(BUILD_CLI "Build command line tool" ON)
 option(BUILD_SHARED_LIB "Build shared library for mobile integration" ON)
 option(BUILD_EXAMPLES "Build examples" OFF)
+include(CTest)
 
 # 依赖库查找
 find_package(PkgConfig)
-find_package(ZLIB)
+find_package(ZLIB REQUIRED)
 
 # OpenMP (optional)
 set(SONY2FUJI_ENABLE_OPENMP_DEFAULT ON)
@@ -53,15 +55,19 @@ set(CORE_SOURCES
     src/core/lut_applicator.cpp
     src/core/color_converter.cpp
     src/core/raw_processor.cpp
+    src/core/white_balance.cpp
+    src/core/preview_exposure.cpp
     src/ffi/sony2fuji_c.cpp
     src/gpu/lut_gpu.cpp
+    src/gpu/image_stats.cpp
 )
 
 if(SONY2FUJI_ENABLE_GPU)
-    if(IOS)
-        list(APPEND CORE_SOURCES src/gpu/metal_lut.mm)
+    if(APPLE)
+        enable_language(OBJCXX)
+        list(APPEND CORE_SOURCES src/gpu/metal_lut.mm src/gpu/metal_photo.mm src/gpu/metal_stats.mm)
         add_compile_definitions(SONY2FUJI_ENABLE_METAL)
-        set_source_files_properties(src/gpu/metal_lut.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+        set_source_files_properties(src/gpu/metal_lut.mm src/gpu/metal_photo.mm src/gpu/metal_stats.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     endif()
     if(ANDROID)
         list(APPEND CORE_SOURCES src/gpu/gles_lut.cpp)
@@ -79,7 +85,7 @@ endif()
 if(ZLIB_FOUND)
     target_link_libraries(sony2fuji_core ZLIB::ZLIB)
 endif()
-if(SONY2FUJI_ENABLE_GPU AND IOS)
+if(SONY2FUJI_ENABLE_GPU AND APPLE)
     target_link_libraries(sony2fuji_core "-framework Metal" "-framework Foundation")
 endif()
 if(SONY2FUJI_ENABLE_GPU AND ANDROID)
@@ -97,7 +103,7 @@ if(BUILD_SHARED_LIB)
     if(ZLIB_FOUND)
         target_link_libraries(sony2fuji ZLIB::ZLIB)
     endif()
-    if(SONY2FUJI_ENABLE_GPU AND IOS)
+    if(SONY2FUJI_ENABLE_GPU AND APPLE)
         target_link_libraries(sony2fuji "-framework Metal" "-framework Foundation")
     endif()
     if(SONY2FUJI_ENABLE_GPU AND ANDROID)
@@ -124,7 +130,60 @@ endif()
 
 # 示例
 if(BUILD_EXAMPLES)
-    add_subdirectory(examples)
+    add_executable(sony2fuji_example examples/simple_example.cpp)
+    target_link_libraries(sony2fuji_example sony2fuji_core)
+endif()
+
+if(BUILD_TESTING AND NOT IOS AND NOT ANDROID)
+    find_package(Threads REQUIRED)
+    add_executable(core_tests tests/core_tests.cpp)
+    target_link_libraries(core_tests sony2fuji_core Threads::Threads)
+    target_compile_definitions(core_tests PRIVATE TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME color_contracts COMMAND core_tests)
+    add_executable(image_stats_tests tests/image_stats_tests.cpp)
+    target_link_libraries(image_stats_tests sony2fuji_core)
+    add_test(NAME image_stats COMMAND image_stats_tests)
+    if(SONY2FUJI_ENABLE_GPU AND APPLE)
+        add_executable(gpu_photo_tests tests/gpu_photo_tests.cpp)
+        target_link_libraries(gpu_photo_tests sony2fuji_core)
+        add_test(NAME gpu_photo COMMAND gpu_photo_tests)
+        set_tests_properties(gpu_photo PROPERTIES ENVIRONMENT "SONY2FUJI_TEST_GPU=1")
+        add_executable(acceleration_tests tests/acceleration_tests.cpp)
+        target_link_libraries(acceleration_tests sony2fuji_core)
+        foreach(fixture "${CMAKE_CURRENT_SOURCE_DIR}/examples/DSC06251.ARW" "${CMAKE_CURRENT_SOURCE_DIR}/examples/DJI_20250602164503_0444_D.DNG")
+            if(EXISTS "${fixture}")
+                get_filename_component(fixture_name "${fixture}" NAME_WE)
+                add_test(NAME acceleration_${fixture_name} COMMAND acceleration_tests "${fixture}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/flog-2-new/FLog2_to_PROVIA_65grid_V.1.00.cube")
+            endif()
+        endforeach()
+    endif()
+    add_executable(raw_reuse_tests tests/raw_reuse_tests.cpp)
+    add_executable(render_benchmark EXCLUDE_FROM_ALL tests/render_benchmark.cpp)
+    target_link_libraries(render_benchmark sony2fuji_core)
+    target_link_libraries(raw_reuse_tests sony2fuji_core)
+    add_test(NAME raw_reuse COMMAND raw_reuse_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/../RawLab/RawLab/Resources/Samples/DSC09067.ARW"
+        "${CMAKE_CURRENT_SOURCE_DIR}/examples/DJI_20250602164503_0444_D.DNG")
+    add_executable(raw_smoke tests/raw_smoke.cpp)
+    target_link_libraries(raw_smoke sony2fuji_core)
+    add_executable(highlight_regression tests/highlight_regression.cpp)
+    add_executable(white_balance_tests tests/white_balance_tests.cpp)
+    target_link_libraries(white_balance_tests sony2fuji_core)
+    add_test(NAME sony_white_balance COMMAND white_balance_tests "${CMAKE_CURRENT_SOURCE_DIR}/../RawLab/RawLab/Resources/Samples/DSC09067.ARW")
+    target_link_libraries(highlight_regression sony2fuji_core)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/DSC06251.ARW")
+        add_test(NAME sony_highlights COMMAND highlight_regression
+            "${CMAKE_CURRENT_SOURCE_DIR}/examples/DSC06251.ARW"
+            "${CMAKE_CURRENT_SOURCE_DIR}/flog-2-new/FLog2_to_PROVIA_65grid_V.1.00.cube")
+    else()
+        message(STATUS "sony_highlights requires the local DSC06251.ARW fixture")
+    endif()
+    add_test(NAME sony_raw COMMAND raw_smoke "${CMAKE_CURRENT_SOURCE_DIR}/../RawLab/RawLab/Resources/Samples/DSC09067.ARW" 7008 4672)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/DJI_20250602164503_0444_D.DNG")
+        add_test(NAME dng_white_balance COMMAND white_balance_tests "${CMAKE_CURRENT_SOURCE_DIR}/examples/DJI_20250602164503_0444_D.DNG")
+        add_test(NAME dji_raw COMMAND raw_smoke "${CMAKE_CURRENT_SOURCE_DIR}/examples/DJI_20250602164503_0444_D.DNG")
+    endif()
 endif()
 
 # 安装规则

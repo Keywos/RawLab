@@ -13,18 +13,25 @@ struct RAWProcessOptions {
     bool useAutoWhiteBalance;   // 使用自动白平衡
     bool useCameraWhiteBalance; // 使用相机白平衡
     bool useCustomWhiteBalance;
+    bool useTemperatureWhiteBalance;
+    float temperature, tint;
     float customWhiteBalance[4];
     float exposure;             // 曝光补偿 (EV)
     float brightness;           // 亮度调整
     bool outputLinear;          // 输出线性数据 (不应用 gamma)
     bool outputAces;            // 输出 ACES 色彩空间
     bool outputAdobe;
-    int outputBitsPerSample;    // 输出位深 (8, 16)
+    int outputBitsPerSample;    // 8/16 display precision; linear working data stays float
+    bool halfSize;              // LibRaw half-resolution demosaic for interactive previews
+    bool matchEmbeddedPreviewExposure; // Optional JPEG-based approximation, not the default
+    bool applyBaselineExposure; // Scene default + DNG BaselineExposure; ignored by preview match
 
     RAWProcessOptions()
         : useAutoWhiteBalance(false)
         , useCameraWhiteBalance(true)
         , useCustomWhiteBalance(false)
+        , useTemperatureWhiteBalance(false)
+        , temperature(6500), tint(0)
         , customWhiteBalance{1.0f, 1.0f, 1.0f, 1.0f}
         , exposure(0.0f)
         , brightness(1.0f)
@@ -32,6 +39,9 @@ struct RAWProcessOptions {
         , outputAces(false)
         , outputAdobe(false)
         , outputBitsPerSample(16)
+        , halfSize(false)
+        , matchEmbeddedPreviewExposure(false)
+        , applyBaselineExposure(true)
     {}
 };
 
@@ -71,7 +81,12 @@ public:
     int getHeight() const;
     std::string getCameraMake() const;
     std::string getCameraModel() const;
+    // Legacy name: returns the last processed image's working space, not sensor RGB.
     ColorSpace getNativeColorSpace() const;
+    float getPreviewExposureEV() const;
+    float getBaselineExposureEV() const;
+    float getMetadataExposureEV() const;
+    bool getAsShotWhiteBalance(float& temperature, float& tint) const;
 
     /**
      * @brief 获取相机色彩矩阵 (Camera RGB -> XYZ)

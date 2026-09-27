@@ -186,15 +186,7 @@ ColorConverter::Matrix3x3 ColorConverter::invertMatrix(const Matrix3x3& m) {
 // ============================================================================
 
 ColorConverter::Matrix3x3 ColorConverter::getSonyNativeToXYZ() {
-    // Sony 相机的原生色彩空间矩阵
-    // 这是一个近似值,实际应该从相机的 color matrix 中获取
-    // 这里使用类似 sRGB 的矩阵作为占位符
-    // 在实际使用中,应该从 libraw 的 imgdata.color.cam_xyz 获取
-    return Matrix3x3{{
-        {0.4124564f, 0.3575761f, 0.1804375f},
-        {0.2126729f, 0.7151522f, 0.0721750f},
-        {0.0193339f, 0.1191920f, 0.9503041f}
-    }};
+    throw std::invalid_argument("Camera-native RGB requires an explicit camera matrix");
 }
 
 ColorConverter::Matrix3x3 ColorConverter::getFGamutToXYZ() {
@@ -360,54 +352,6 @@ ColorConverter::Matrix3x3 ColorConverter::getChromaticAdaptationMatrix(
 // GammaConverter Implementation
 // ============================================================================
 
-namespace {
-
-// ============================================================================
-// F-Log2 helpers (soft-knee + percentile scaling).
-// ============================================================================
-constexpr float kLowPercentile = 0.005f;
-constexpr float kHighPercentile = 0.995f;
-constexpr size_t kMaxSamples = 200000;
-constexpr float kSoftKneeScale = 0.5f;
-constexpr float kSoftKneeMin = 1e-6f;
-constexpr float kSoftplusClamp = 20.0f;
-
-float clampPercentile(float value) {
-    return std::max(0.0f, std::min(1.0f, value));
-}
-
-float clamp01(float value) {
-    return std::max(0.0f, std::min(1.0f, value));
-}
-
-float selectPercentile(std::vector<float>& values, float percentile) {
-    if (values.empty()) {
-        return 0.0f;
-    }
-
-    float pct = clampPercentile(percentile);
-    size_t index = static_cast<size_t>(std::round((values.size() - 1) * pct));
-    std::nth_element(values.begin(), values.begin() + index, values.end());
-    return values[index];
-}
-
-float softplus(float value, float knee) {
-    if (knee <= 0.0f) {
-        return std::max(0.0f, value);
-    }
-
-    float scaled = value / knee;
-    if (scaled > kSoftplusClamp) {
-        return value;
-    }
-    if (scaled < -kSoftplusClamp) {
-        return 0.0f;
-    }
-
-    return knee * std::log1p(std::exp(scaled));
-}
-
-} // namespace
 
 float GammaConverter::applyGamma(float linear, float gamma) {
     if (linear <= 0.0f) return 0.0f;
@@ -444,7 +388,7 @@ float GammaConverter::applyFLog2(float linear) {
     const float f = 0.092864f;
     const float cut = 0.00088899597f;
 
-    float lin = std::max(0.0f, linear);
+    float lin = linear;
 
     if (lin < cut) {
         return std::max(0.0f, std::min(1.0f, e * lin + f));
@@ -466,115 +410,22 @@ GammaConverter::FLog2Diagnostics GammaConverter::applyFLog2ToImage(
     ImageData& image,
     const FLog2Options& options
 ) {
-    FLog2Diagnostics diagnostics;
-    if (image.pixels.empty()) {
-        return diagnostics;
+    (void)options;
+    FLog2Diagnostics result;
+    if (image.pixels.empty()) return result;
+    result.min_linear = std::numeric_limits<float>::max();
+    result.max_linear = std::numeric_limits<float>::lowest();
+    // Encoding must not change exposure based on image content.
+    for (auto& pixel : image.pixels) {
+        float low = std::min({pixel.r, pixel.g, pixel.b});
+        float high = std::max({pixel.r, pixel.g, pixel.b});
+        result.min_linear = std::min(result.min_linear, low);
+        result.max_linear = std::max(result.max_linear, high);
+        result.negative_pixels += low < 0;
+        result.over_pixels += high > 1;
+        pixel = applyFLog2ToRGB(pixel);
     }
-
-    size_t pixel_count = image.pixels.size();
-    if (options.clampOnly) {
-        float min_linear = std::numeric_limits<float>::max();
-        float max_linear = std::numeric_limits<float>::lowest();
-        size_t negative_pixels = 0;
-        size_t over_pixels = 0;
-
-#ifdef _OPENMP
-#pragma omp parallel for reduction(min:min_linear) reduction(max:max_linear) \
-    reduction(+:negative_pixels, over_pixels) if (pixel_count >= kParallelThreshold)
-#endif
-        for (size_t i = 0; i < pixel_count; ++i) {
-            auto& pixel = image.pixels[i];
-            float min_c = std::min(pixel.r, std::min(pixel.g, pixel.b));
-            float max_c = std::max(pixel.r, std::max(pixel.g, pixel.b));
-
-            min_linear = std::min(min_linear, min_c);
-            max_linear = std::max(max_linear, max_c);
-
-            if (min_c < 0.0f) {
-                ++negative_pixels;
-            }
-            if (max_c > 1.0f) {
-                ++over_pixels;
-            }
-
-            RGB clamped(
-                clamp01(pixel.r),
-                clamp01(pixel.g),
-                clamp01(pixel.b)
-            );
-            pixel = applyFLog2ToRGB(clamped);
-        }
-
-        diagnostics.min_linear = min_linear;
-        diagnostics.max_linear = max_linear;
-        diagnostics.negative_pixels = negative_pixels;
-        diagnostics.over_pixels = over_pixels;
-        return diagnostics;
-    }
-
-    diagnostics.min_linear = std::numeric_limits<float>::max();
-    diagnostics.max_linear = std::numeric_limits<float>::lowest();
-
-    size_t sample_target = std::min(kMaxSamples, pixel_count);
-    size_t sample_step = std::max<size_t>(1, pixel_count / std::max<size_t>(1, sample_target));
-
-    std::vector<float> min_samples;
-    std::vector<float> max_samples;
-    min_samples.reserve(sample_target);
-    max_samples.reserve(sample_target);
-
-    for (size_t i = 0; i < pixel_count; ++i) {
-        const auto& pixel = image.pixels[i];
-        float min_c = std::min(pixel.r, std::min(pixel.g, pixel.b));
-        float max_c = std::max(pixel.r, std::max(pixel.g, pixel.b));
-
-        diagnostics.min_linear = std::min(diagnostics.min_linear, min_c);
-        diagnostics.max_linear = std::max(diagnostics.max_linear, max_c);
-
-        if (min_c < 0.0f) {
-            diagnostics.negative_pixels++;
-        }
-        if (max_c > 1.0f) {
-            diagnostics.over_pixels++;
-        }
-
-        if (i % sample_step == 0) {
-            min_samples.push_back(min_c);
-            max_samples.push_back(max_c);
-        }
-    }
-
-    float low_p = selectPercentile(min_samples, kLowPercentile);
-    float high_p = selectPercentile(max_samples, kHighPercentile);
-    if (low_p > high_p) {
-        std::swap(low_p, high_p);
-    }
-
-    float knee = 0.0f;
-    if (low_p < 0.0f) {
-        knee = std::max(kSoftKneeMin, -low_p * kSoftKneeScale);
-    }
-    diagnostics.offset = (knee > 0.0f) ? (knee * std::log(2.0f)) : 0.0f;
-
-    float high_mapped = softplus(high_p, knee);
-    if (options.normalizeToRange && high_mapped > 1.0f) {
-        diagnostics.scale = 1.0f / high_mapped;
-    }
-
-#ifdef _OPENMP
-#pragma omp parallel for if (pixel_count >= kParallelThreshold)
-#endif
-    for (size_t i = 0; i < pixel_count; ++i) {
-        auto& pixel = image.pixels[i];
-        RGB scaled(
-            softplus(pixel.r, knee) * diagnostics.scale,
-            softplus(pixel.g, knee) * diagnostics.scale,
-            softplus(pixel.b, knee) * diagnostics.scale
-        );
-        pixel = applyFLog2ToRGB(scaled);
-    }
-
-    return diagnostics;
+    return result;
 }
 
 RGB GammaConverter::applyGammaToRGB(const RGB& rgb, float gamma) {

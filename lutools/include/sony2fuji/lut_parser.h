@@ -34,6 +34,9 @@ public:
      * @brief 获取标题
      */
     const std::string& getTitle() const { return title_; }
+    const RGB& domainMin() const { return domainMin_; }
+    const RGB& domainMax() const { return domainMax_; }
+    bool isPhotoLUT() const { return photoLUT_; }
 
     /**
      * @brief 获取指定索引的 RGB 值
@@ -54,6 +57,9 @@ private:
     std::vector<RGB> data_;     // LUT 数据 (size^3 个元素)
     std::string title_;         // LUT 标题
     std::string description_;   // LUT 描述
+    RGB domainMin_{0, 0, 0};
+    RGB domainMax_{1, 1, 1};
+    bool photoLUT_ = false;
 
     // 解析 .cube 文件
     ErrorCode parseCubeFile(const std::string& filepath);

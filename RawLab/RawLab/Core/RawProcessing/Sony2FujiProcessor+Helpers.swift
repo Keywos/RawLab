@@ -82,7 +82,7 @@ extension Sony2FujiProcessor {
             request.preview_long_edge = edgeValue
         } else {
             request.intent = SONY2FUJI_INTENT_FINAL
-            request.size_mode = SONY2FUJI_SIZE_EXACT
+            request.size_mode = SONY2FUJI_SIZE_NATIVE
             request.target_width = width
             request.target_height = height
         }

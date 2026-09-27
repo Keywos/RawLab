@@ -75,7 +75,9 @@ extension RawEditorViewModel {
 
     func isFLog2LUTName(_ name: String) -> Bool {
         let lower = name.lowercased()
-        return lower.contains("f-log2") || lower.contains("flog2")
+        let isInput = lower.contains("f-log2") || lower.contains("flog2")
+        let isLogOutput = lower.contains("to_flog2") || lower.contains("to_f-log2")
+        return isInput && !isLogOutput && !lower.contains("flog2c")
     }
 
     func prettifyLUTName(_ name: String) -> String {

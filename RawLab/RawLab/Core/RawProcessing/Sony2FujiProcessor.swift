@@ -118,7 +118,7 @@ struct Sony2FujiProcessor {
 
         let output = try copyBuffer(buffer)
         sony2fuji_release_buffer(&buffer)
-        return ProcessResult(buffer: output, orientation: metadata.orientation)
+        return ProcessResult(buffer: output, orientation: .up)
     }
 
     func processBuffer(

@@ -1,6 +1,11 @@
 #include "sony2fuji/ffi/sony2fuji_c.h"
 
 #include "sony2fuji/sony2fuji.h"
+#include "core/photo_rendering.h"
+#include "gpu/image_stats.h"
+#if defined(SONY2FUJI_ENABLE_METAL)
+#include "gpu/photo_gpu.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -11,9 +16,24 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <filesystem>
+#include <sys/stat.h>
 
 struct sony2fuji_session {
     sony2fuji::GpuConfig gpu_config;
+    sony2fuji::ImageData raw_cache;
+    std::string raw_key;
+    sony2fuji_raw_exposure_mode raw_exposure_mode = SONY2FUJI_EXPOSURE_SCENE;
+    float baseline_ev = 0;
+    float metadata_ev = 0;
+    float as_shot_temperature = 6500, as_shot_tint = 0;
+    bool calibrated_wb = false;
+    std::string preview_exposure_key;
+    float preview_camera_ev = 0;
+    std::unique_ptr<sony2fuji::RAWProcessor> raw_processor;
+    std::string processor_key;
+    bool interactive_preview = false;
+    sony2fuji_render_backend last_backend = SONY2FUJI_BACKEND_CPU;
 };
 
 namespace {
@@ -26,32 +46,6 @@ bool isEmptyString(const char* value) {
     return value == nullptr || value[0] == '\0';
 }
 
-enum class AcesConversionMode {
-    Disabled,
-    AssumeAP0,
-    AssumeAP1
-};
-
-AcesConversionMode getAcesConversionMode() {
-    const char* value = std::getenv("SONY2FUJI_ACES_MODE");
-    if (!value || value[0] == '\0') {
-        return AcesConversionMode::Disabled;
-    }
-
-    std::string mode(value);
-    std::transform(mode.begin(), mode.end(), mode.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-    if (mode == "off" || mode == "disabled" || mode == "adobe") {
-        return AcesConversionMode::Disabled;
-    }
-
-    if (mode == "ap1" || mode == "acescg" || mode == "skip") {
-        return AcesConversionMode::AssumeAP1;
-    }
-
-    return AcesConversionMode::AssumeAP0;
-}
 
 float clampFloat(float value, float low, float high) {
     return std::max(low, std::min(high, value));
@@ -304,6 +298,23 @@ sony2fuji_status validateRequest(
     if (request->struct_size < sizeof(sony2fuji_request)) {
         return SONY2FUJI_STATUS_INVALID_ARGUMENT;
     }
+    const float controls[] = {request->exposure_ev, request->brightness, request->contrast,
+        request->saturation, request->temperature, request->tint, request->lut_strength,
+        request->highlights, request->shadows, request->tone_curve, request->noise_reduction,
+        request->sharpening};
+    for (float value : controls)
+        if (!std::isfinite(value)) return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    if (std::abs(request->exposure_ev) > 20 || request->brightness <= 0)
+        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    if (request->wb_mode == SONY2FUJI_WB_TEMPERATURE &&
+        (request->input_type != SONY2FUJI_INPUT_RAW || request->temperature < 2000 ||
+         request->temperature > 50000 || std::abs(request->tint) > 150))
+        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    if (request->wb_mode == SONY2FUJI_WB_CUSTOM) {
+        for (int c=0; c<3; ++c)
+            if (!std::isfinite(request->wb_mul[c]) || request->wb_mul[c] <= 0)
+                return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    }
 
     if (request->input_type == SONY2FUJI_INPUT_RAW) {
         if (isEmptyString(request->input_path)) {
@@ -320,6 +331,13 @@ sony2fuji_status validateRequest(
     if (request->output_target == SONY2FUJI_TARGET_FILE) {
         if (isEmptyString(request->output_path)) {
             return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+        }
+        if (request->input_type == SONY2FUJI_INPUT_RAW) {
+            std::error_code error;
+            const bool sameFile = std::filesystem::equivalent(request->input_path, request->output_path, error);
+            if (sameFile || std::filesystem::weakly_canonical(request->input_path) ==
+                std::filesystem::weakly_canonical(request->output_path))
+                return SONY2FUJI_STATUS_INVALID_ARGUMENT;
         }
     } else if (request->output_target == SONY2FUJI_TARGET_BUFFER) {
         if (!out_buffer) {
@@ -383,6 +401,10 @@ sony2fuji_status computeTargetSize(
     }
 
     switch (mode) {
+        case SONY2FUJI_SIZE_NATIVE:
+            *out_width = src_width;
+            *out_height = src_height;
+            return SONY2FUJI_STATUS_OK;
         case SONY2FUJI_SIZE_EXACT:
             if (request.target_width == 0 || request.target_height == 0) {
                 return SONY2FUJI_STATUS_INVALID_ARGUMENT;
@@ -469,21 +491,14 @@ void applyToneAdjustments(sony2fuji::ImageData& image, const sony2fuji_request& 
         return;
     }
 
-    float exposure_scale = std::pow(2.0f, request.exposure_ev) * request.brightness;
+    float exposure_scale = 1.0f;
     float contrast = clampFloat(request.contrast, 0.0f, 2.0f);
     float saturation = clampFloat(request.saturation, 0.0f, 2.0f);
     float highlights = clampFloat(request.highlights, -1.0f, 1.0f);
     float shadows = clampFloat(request.shadows, -1.0f, 1.0f);
     bool use_curve = request.tone_curve != 0.0f;
     ToneCurvePoints curve = buildToneCurve(request.tone_curve);
-    sony2fuji::RGB wb = whiteBalanceForTempTint(request.temperature, request.tint);
-    if (request.wb_mode == SONY2FUJI_WB_CUSTOM) {
-        wb = normalizeWhiteBalance(
-            wb.r * request.wb_mul[0],
-            wb.g * request.wb_mul[1],
-            wb.b * request.wb_mul[2]
-        );
-    }
+    sony2fuji::RGB wb(1, 1, 1);
 
     for (auto& pixel : image.pixels) {
         applyExposureAndWhiteBalance(pixel, exposure_scale, wb);
@@ -630,112 +645,6 @@ sony2fuji_status ensureLinear(
     return SONY2FUJI_STATUS_OK;
 }
 
-sony2fuji_status ensureDisplaySRGB(
-    sony2fuji::ImageData& image,
-    sony2fuji_color_space* space,
-    bool* is_linear
-) {
-    if (!space || !is_linear) {
-        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
-    }
-
-    if (*space != SONY2FUJI_COLOR_SRGB) {
-        if (!(*is_linear)) {
-            return SONY2FUJI_STATUS_UNSUPPORTED;
-        }
-
-        sony2fuji::ColorConverter converter;
-        auto from = toCoreColorSpace(*space);
-        auto to = sony2fuji::ColorSpace::sRGB;
-        sony2fuji::ErrorCode result = converter.convertImage(image, from, to);
-        if (result != sony2fuji::ErrorCode::Success) {
-            return mapError(result);
-        }
-
-        *space = SONY2FUJI_COLOR_SRGB;
-    }
-
-    if (*is_linear) {
-        for (auto& pixel : image.pixels) {
-            pixel.r = sony2fuji::GammaConverter::applySRGBGamma(pixel.r);
-            pixel.g = sony2fuji::GammaConverter::applySRGBGamma(pixel.g);
-            pixel.b = sony2fuji::GammaConverter::applySRGBGamma(pixel.b);
-        }
-        *is_linear = false;
-    }
-
-    return SONY2FUJI_STATUS_OK;
-}
-
-sony2fuji_status convertToFGamut(
-    sony2fuji::ImageData& image,
-    sony2fuji_color_space* space,
-    bool* is_linear,
-    const sony2fuji::ColorConverter::Matrix3x3* camera_to_xyz,
-    bool has_camera_matrix
-) {
-    if (!space || !is_linear) {
-        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
-    }
-
-    sony2fuji_status status = ensureLinear(image, *space, is_linear);
-    if (status != SONY2FUJI_STATUS_OK) {
-        return status;
-    }
-
-    if (*space == SONY2FUJI_COLOR_FGAMUT) {
-        return SONY2FUJI_STATUS_OK;
-    }
-
-    sony2fuji::ColorConverter converter;
-
-    if (*space == SONY2FUJI_COLOR_ADOBE_RGB) {
-        sony2fuji::ErrorCode result = converter.convertImage(
-            image,
-            sony2fuji::ColorSpace::AdobeRGB,
-            sony2fuji::ColorSpace::FujiFilm_FGamut
-        );
-        if (result != sony2fuji::ErrorCode::Success) {
-            return mapError(result);
-        }
-
-        *space = SONY2FUJI_COLOR_FGAMUT;
-        *is_linear = true;
-        return SONY2FUJI_STATUS_OK;
-    }
-
-    if (*space != SONY2FUJI_COLOR_ACESCG) {
-        sony2fuji::ErrorCode result = sony2fuji::ErrorCode::Success;
-        if (*space == SONY2FUJI_COLOR_SONY_NATIVE && has_camera_matrix && camera_to_xyz) {
-            result = converter.convertImage(
-                image,
-                *camera_to_xyz,
-                sony2fuji::ColorSpace::SonyNative,
-                sony2fuji::ColorSpace::ACEScg
-            );
-        } else {
-            auto from = toCoreColorSpace(*space);
-            auto to = sony2fuji::ColorSpace::ACEScg;
-            result = converter.convertImage(image, from, to);
-        }
-        if (result != sony2fuji::ErrorCode::Success) {
-            return mapError(result);
-        }
-        *space = SONY2FUJI_COLOR_ACESCG;
-    }
-
-    if (*space != SONY2FUJI_COLOR_FGAMUT) {
-        auto to = sony2fuji::ColorSpace::FujiFilm_FGamut;
-        sony2fuji::ErrorCode result = converter.convertImage(image, sony2fuji::ColorSpace::ACEScg, to);
-        if (result != sony2fuji::ErrorCode::Success) {
-            return mapError(result);
-        }
-    }
-
-    *space = SONY2FUJI_COLOR_FGAMUT;
-    *is_linear = true;
-    return SONY2FUJI_STATUS_OK;
-}
 
 sony2fuji_status loadLUT(
     const char* lut_path,
@@ -754,122 +663,78 @@ sony2fuji_status loadLUT(
     return SONY2FUJI_STATUS_OK;
 }
 
-sony2fuji_status applyLUTWithStrength(
-    const sony2fuji_request& request,
-    sony2fuji::ImageData& image,
-    const sony2fuji::GpuConfig& gpu_config
-) {
-    float strength = clampFloat(request.lut_strength, 0.0f, 2.0f);
-    if (strength <= 0.0f) {
-        return SONY2FUJI_STATUS_OK;
-    }
-
-    std::shared_ptr<sony2fuji::LUT3D> lut;
-    sony2fuji_status status = loadLUT(request.lut_path, &lut);
-    if (status != SONY2FUJI_STATUS_OK) {
-        return status;
-    }
-
-    if (strength == 1.0f) {
-        return mapError(sony2fuji::applyLUTWithConfig(lut, image, gpu_config));
-    }
-
-    sony2fuji::ImageData base = image;
-    sony2fuji::ErrorCode result = sony2fuji::applyLUTWithConfig(lut, image, gpu_config);
-    if (result != sony2fuji::ErrorCode::Success) {
-        return mapError(result);
-    }
-
-    for (size_t i = 0; i < image.pixels.size(); ++i) {
-        sony2fuji::RGB mixed = lerpRGB(base.pixels[i], image.pixels[i], strength);
-        image.pixels[i].r = clampFloat(mixed.r, 0.0f, 1.0f);
-        image.pixels[i].g = clampFloat(mixed.g, 0.0f, 1.0f);
-        image.pixels[i].b = clampFloat(mixed.b, 0.0f, 1.0f);
-    }
-
-    return SONY2FUJI_STATUS_OK;
-}
-
 sony2fuji_status loadRawImage(
-    const sony2fuji_request& request,
-    sony2fuji::ImageData& image,
-    sony2fuji_color_space* space,
-    bool* is_linear,
-    sony2fuji::ColorConverter::Matrix3x3* camera_to_xyz,
-    bool* has_camera_matrix
+    sony2fuji_session* session, const sony2fuji_request& request,
+    sony2fuji::ImageData& image, sony2fuji_color_space* space, bool* is_linear,
+    bool copyImage = true
 ) {
-    sony2fuji::RAWProcessor processor;
-    sony2fuji::ErrorCode result = processor.loadFile(request.input_path);
-    if (result != sony2fuji::ErrorCode::Success) {
-        return mapError(result);
-    }
-
-    sony2fuji::RAWProcessOptions options;
-    options.useAutoWhiteBalance = request.wb_mode == SONY2FUJI_WB_AUTO;
-    options.useCameraWhiteBalance = request.wb_mode == SONY2FUJI_WB_CAMERA;
-    options.useCustomWhiteBalance = request.wb_mode == SONY2FUJI_WB_CUSTOM;
-    options.customWhiteBalance[0] = request.wb_mul[0];
-    options.customWhiteBalance[1] = request.wb_mul[1];
-    options.customWhiteBalance[2] = request.wb_mul[2];
-    options.customWhiteBalance[3] = request.wb_mul[3];
-    options.exposure = 0.0f;
-    options.brightness = 1.0f;
-    options.outputLinear = !isEmptyString(request.lut_path) && request.lut_strength > 0.0f;
-    AcesConversionMode aces_mode = getAcesConversionMode();
-    options.outputAces = options.outputLinear && aces_mode != AcesConversionMode::Disabled;
-    options.outputAdobe = options.outputLinear && aces_mode == AcesConversionMode::Disabled;
-
-    result = processor.process(options, image);
-    if (result != sony2fuji::ErrorCode::Success) {
-        return mapError(result);
-    }
-
-    if (!space || !is_linear) {
-        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
-    }
-
-    if (camera_to_xyz && has_camera_matrix) {
-        float camera_matrix[3][3];
-        *has_camera_matrix = processor.getCameraColorMatrix(camera_matrix);
-        if (*has_camera_matrix) {
-            *camera_to_xyz = sony2fuji::ColorConverter::Matrix3x3{{
-                {camera_matrix[0][0], camera_matrix[0][1], camera_matrix[0][2]},
-                {camera_matrix[1][0], camera_matrix[1][1], camera_matrix[1][2]},
-                {camera_matrix[2][0], camera_matrix[2][1], camera_matrix[2][2]}
-            }};
+    struct stat fileInfo{};
+    if (stat(request.input_path, &fileInfo) != 0) return SONY2FUJI_STATUS_IO_ERROR;
+    const std::string fileKey = std::string(request.input_path) + ":" + std::to_string(fileInfo.st_mtime) +
+        ":" + std::to_string(fileInfo.st_size);
+    const bool interactive = session->interactive_preview && request.intent == SONY2FUJI_INTENT_PREVIEW &&
+        request.output_target == SONY2FUJI_TARGET_BUFFER &&
+        !(session->raw_exposure_mode == SONY2FUJI_EXPOSURE_PREVIEW && request.wb_mode == SONY2FUJI_WB_CAMERA);
+    std::string key = fileKey + ":" + std::to_string(request.wb_mode) +
+        ":" + std::to_string(session->raw_exposure_mode);
+    for (float multiplier : request.wb_mul) key += ":" + std::to_string(multiplier);
+    if (request.wb_mode == SONY2FUJI_WB_TEMPERATURE)
+        key += ":" + std::to_string(request.temperature) + ":" + std::to_string(request.tint);
+    // A full-quality cache can serve a proxy, but never the reverse. Non-WB
+    // sliders should not trigger another demosaic just because dragging began.
+    const std::string exactKey = key + ":exact";
+    key += interactive && session->raw_key != exactKey ? ":interactive" : ":exact";
+    if (session->raw_key != key || session->raw_cache.pixels.empty()) {
+        const bool anchoredPreview = session->raw_exposure_mode == SONY2FUJI_EXPOSURE_PREVIEW &&
+            request.wb_mode == SONY2FUJI_WB_TEMPERATURE;
+        if (anchoredPreview && session->preview_exposure_key != fileKey) {
+            auto reference = request;
+            reference.wb_mode = SONY2FUJI_WB_CAMERA;
+            const auto status = loadRawImage(session, reference, image, space, is_linear);
+            image = {};
+            if (status != SONY2FUJI_STATUS_OK) return status;
+        }
+        if (!session->raw_processor || session->processor_key != fileKey) {
+            auto processor = std::make_unique<sony2fuji::RAWProcessor>();
+            const auto loaded = processor->loadFile(request.input_path);
+            if (loaded != sony2fuji::ErrorCode::Success) return mapError(loaded);
+            session->raw_processor = std::move(processor);
+            session->processor_key = fileKey;
+        }
+        auto& processor = *session->raw_processor;
+        sony2fuji::RAWProcessOptions options;
+        options.halfSize = interactive;
+        options.outputLinear = true;
+        options.outputAdobe = true;
+        options.matchEmbeddedPreviewExposure = session->raw_exposure_mode == SONY2FUJI_EXPOSURE_PREVIEW && !anchoredPreview;
+        options.applyBaselineExposure = session->raw_exposure_mode != SONY2FUJI_EXPOSURE_SENSOR && !anchoredPreview;
+        if (anchoredPreview) options.exposure = session->preview_camera_ev;
+        options.useCameraWhiteBalance = request.wb_mode == SONY2FUJI_WB_CAMERA;
+        options.useAutoWhiteBalance = request.wb_mode == SONY2FUJI_WB_AUTO;
+        options.useCustomWhiteBalance = request.wb_mode == SONY2FUJI_WB_CUSTOM;
+        options.useTemperatureWhiteBalance = request.wb_mode == SONY2FUJI_WB_TEMPERATURE;
+        options.temperature=request.temperature; options.tint=request.tint;
+        std::copy(std::begin(request.wb_mul), std::end(request.wb_mul), options.customWhiteBalance);
+        sony2fuji::ImageData decoded;
+        auto result = processor.process(options, decoded);
+        if (result != sony2fuji::ErrorCode::Success) {
+            session->raw_processor.reset(); session->processor_key.clear();
+            return mapError(result);
+        }
+        session->raw_cache = std::move(decoded);
+        session->raw_key = key;
+        session->baseline_ev = anchoredPreview ? session->preview_camera_ev : processor.getBaselineExposureEV();
+        session->metadata_ev = processor.getMetadataExposureEV();
+        session->calibrated_wb = processor.getAsShotWhiteBalance(session->as_shot_temperature,session->as_shot_tint);
+        if (session->raw_exposure_mode == SONY2FUJI_EXPOSURE_PREVIEW && request.wb_mode == SONY2FUJI_WB_CAMERA) {
+            session->preview_exposure_key = fileKey;
+            session->preview_camera_ev = session->baseline_ev;
         }
     }
-
-    if (options.outputLinear) {
-        if (options.outputAces) {
-            if (aces_mode == AcesConversionMode::AssumeAP0) {
-                sony2fuji::ColorConverter converter;
-                result = converter.convertImage(
-                    image,
-                    sony2fuji::ColorSpace::ACES2065_1,
-                    sony2fuji::ColorSpace::ACEScg
-                );
-                if (result != sony2fuji::ErrorCode::Success) {
-                    return mapError(result);
-                }
-            }
-
-            *space = SONY2FUJI_COLOR_ACESCG;
-            *is_linear = true;
-            return SONY2FUJI_STATUS_OK;
-        }
-
-        if (options.outputAdobe) {
-            *space = SONY2FUJI_COLOR_ADOBE_RGB;
-        } else {
-            *space = SONY2FUJI_COLOR_SONY_NATIVE;
-        }
-        *is_linear = true;
-        return SONY2FUJI_STATUS_OK;
-    }
-
-    *space = SONY2FUJI_COLOR_SRGB;
-    *is_linear = false;
+    if (copyImage) image = session->raw_cache;
+    else { image.width = session->raw_cache.width; image.height = session->raw_cache.height; }
+    *space = SONY2FUJI_COLOR_ADOBE_RGB;
+    *is_linear = true;
     return SONY2FUJI_STATUS_OK;
 }
 
@@ -1007,6 +872,16 @@ sony2fuji_status sony2fuji_session_destroy(sony2fuji_session* session) {
     return SONY2FUJI_STATUS_OK;
 }
 
+sony2fuji_status sony2fuji_session_set_interactive_preview(sony2fuji_session* session, int32_t enabled) {
+    if (!session || (enabled != 0 && enabled != 1)) return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    session->interactive_preview = enabled != 0;
+    return SONY2FUJI_STATUS_OK;
+}
+
+sony2fuji_render_backend sony2fuji_session_get_last_backend(const sony2fuji_session* session) {
+    return session ? session->last_backend : SONY2FUJI_BACKEND_CPU;
+}
+
 sony2fuji_status sony2fuji_session_set_gpu_config(
     sony2fuji_session* session,
     const sony2fuji_gpu_config* config
@@ -1022,7 +897,36 @@ sony2fuji_status sony2fuji_session_set_gpu_config(
     return SONY2FUJI_STATUS_OK;
 }
 
-sony2fuji_status sony2fuji_process(
+sony2fuji_status sony2fuji_session_set_raw_exposure_mode(
+    sony2fuji_session* session, sony2fuji_raw_exposure_mode mode
+) {
+    if (!session || mode < SONY2FUJI_EXPOSURE_SCENE || mode > SONY2FUJI_EXPOSURE_SENSOR)
+        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    session->raw_exposure_mode = mode;
+    return SONY2FUJI_STATUS_OK;
+}
+
+sony2fuji_status sony2fuji_session_get_raw_exposure(
+    const sony2fuji_session* session, float* baseline_ev, float* metadata_ev
+) {
+    if (!session || !baseline_ev || !metadata_ev || session->raw_cache.pixels.empty())
+        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    *baseline_ev = session->baseline_ev;
+    *metadata_ev = session->metadata_ev;
+    return SONY2FUJI_STATUS_OK;
+}
+
+sony2fuji_status sony2fuji_session_get_raw_white_balance(
+    const sony2fuji_session* session, float* temperature, float* tint
+) {
+    if (!session || !temperature || !tint || session->raw_cache.pixels.empty())
+        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    if (!session->calibrated_wb) return SONY2FUJI_STATUS_UNSUPPORTED;
+    *temperature=session->as_shot_temperature; *tint=session->as_shot_tint;
+    return SONY2FUJI_STATUS_OK;
+}
+
+static sony2fuji_status processImpl(
     sony2fuji_session* session,
     const sony2fuji_request* request,
     sony2fuji_buffer* out_buffer
@@ -1043,58 +947,96 @@ sony2fuji_status sony2fuji_process(
 
     sony2fuji_request local = *request;
     local.lut_strength = clampFloat(local.lut_strength, 0.0f, 2.0f);
+    session->last_backend = SONY2FUJI_BACKEND_CPU;
+#if defined(SONY2FUJI_ENABLE_METAL)
+    const bool gpuPipeline = session->gpu_config.mode != sony2fuji::GpuMode::Off;
+#else
+    const bool gpuPipeline = false;
+#endif
 
     sony2fuji::ImageData image;
     sony2fuji_color_space color_space = SONY2FUJI_COLOR_SRGB;
     bool is_linear = false;
-    sony2fuji::ColorConverter::Matrix3x3 camera_to_xyz;
-    bool has_camera_matrix = false;
-
     if (local.input_type == SONY2FUJI_INPUT_RAW) {
-        status = loadRawImage(local, image, &color_space, &is_linear, &camera_to_xyz, &has_camera_matrix);
+        status = loadRawImage(session, local, image, &color_space, &is_linear, !gpuPipeline);
     } else {
         status = loadBufferImage(local, image, &color_space, &is_linear);
     }
+    if (status != SONY2FUJI_STATUS_OK) return status;
+    status = ensureLinear(image, color_space, &is_linear);
+    if (status != SONY2FUJI_STATUS_OK) return status;
+    if (color_space == SONY2FUJI_COLOR_SONY_NATIVE) return SONY2FUJI_STATUS_UNSUPPORTED;
 
-    if (status != SONY2FUJI_STATUS_OK) {
-        return status;
+    // Absolute RAW WB already ran in camera space. Legacy RGB controls compensate
+    // for the chosen illuminant (inverse response), not paint its color onto RGB.
+    const auto reference = whiteBalanceForTempTint(6500, 0);
+    const auto selected = whiteBalanceForTempTint(local.temperature, local.tint);
+    const float exposure = std::pow(2.0f, local.exposure_ev) * local.brightness;
+    sony2fuji::RGB wb(1,1,1);
+    if (local.wb_mode != SONY2FUJI_WB_TEMPERATURE) {
+        wb=sony2fuji::RGB(reference.r/std::max(selected.r,1e-4f),
+            reference.g/std::max(selected.g,1e-4f),reference.b/std::max(selected.b,1e-4f));
+        wb.r/=wb.g; wb.b/=wb.g; wb.g=1;
     }
-
-    bool apply_before_lut = local.input_type == SONY2FUJI_INPUT_BUFFER;
-    if (apply_before_lut) {
-        applyToneAdjustments(image, local);
+    if (local.input_type == SONY2FUJI_INPUT_BUFFER && local.wb_mode == SONY2FUJI_WB_CUSTOM) {
+        wb.r *= local.wb_mul[0]/local.wb_mul[1];
+        wb.b *= local.wb_mul[2]/local.wb_mul[1];
     }
-
-    bool use_lut = !isEmptyString(local.lut_path) && local.lut_strength > 0.0f;
-    bool clamp_flog2 = false;
-    if (use_lut && local.input_type == SONY2FUJI_INPUT_RAW) {
-        clamp_flog2 = getAcesConversionMode() == AcesConversionMode::Disabled;
-    }
-
+    const bool use_lut = !isEmptyString(local.lut_path) && local.lut_strength > 0;
+    std::shared_ptr<sony2fuji::LUT3D> lut;
     if (use_lut) {
-        status = convertToFGamut(image, &color_space, &is_linear, &camera_to_xyz, has_camera_matrix);
-        if (status != SONY2FUJI_STATUS_OK) {
-            return status;
+        status = loadLUT(local.lut_path, &lut);
+        if (status != SONY2FUJI_STATUS_OK) return status;
+        if (!lut->isPhotoLUT()) return SONY2FUJI_STATUS_UNSUPPORTED;
+    }
+#if defined(SONY2FUJI_ENABLE_METAL)
+    if (gpuPipeline) {
+        uint32_t width, height;
+        status = computeTargetSize(local, image.width, image.height, &width, &height);
+        if (status != SONY2FUJI_STATUS_OK) return status;
+        const auto& source = local.input_type == SONY2FUJI_INPUT_RAW ? session->raw_cache : image;
+        sony2fuji::ImageData rendered;
+        if (sony2fuji::renderPhotoMetal(source, toCoreColorSpace(color_space), local, lut, wb, width, height, rendered)) {
+            session->last_backend = SONY2FUJI_BACKEND_METAL;
+            if (local.output_target == SONY2FUJI_TARGET_FILE) return writeOutputFile(local, rendered);
+            return writeOutputBuffer(local, rendered, out_buffer);
         }
+        if (session->gpu_config.mode == sony2fuji::GpuMode::Force) return SONY2FUJI_STATUS_PROCESSING_ERROR;
+        if (local.input_type == SONY2FUJI_INPUT_RAW) image = session->raw_cache;
+    }
+#endif
+    // A pixel-radius filter must run at source resolution for preview/export parity.
+    if (local.intent == SONY2FUJI_INTENT_PREVIEW && local.sharpening <= 0) {
+        uint32_t width, height;
+        status = computeTargetSize(local, image.width, image.height, &width, &height);
+        if (status != SONY2FUJI_STATUS_OK) return status;
+        if (width != static_cast<uint32_t>(image.width) || height != static_cast<uint32_t>(image.height))
+            image = resizeBilinear(image, width, height);
+    }
+    sony2fuji::ColorConverter converter;
+    converter.convertImage(image, toCoreColorSpace(color_space), sony2fuji::ColorSpace::sRGB);
+    color_space = SONY2FUJI_COLOR_SRGB;
+    for (auto& pixel : image.pixels) applyExposureAndWhiteBalance(pixel, exposure, wb);
 
-        applyFLog2Encoding(image, clamp_flog2);
-        color_space = SONY2FUJI_COLOR_FGAMUT;
-        is_linear = false;
-
-        status = applyLUTWithStrength(local, image, session->gpu_config);
-        if (status != SONY2FUJI_STATUS_OK) {
-            return status;
-        }
+    sony2fuji::ImageData base = image;
+    for (auto& p : base.pixels) {
+        p.r = sony2fuji::neutralDisplay(p.r);
+        p.g = sony2fuji::neutralDisplay(p.g);
+        p.b = sony2fuji::neutralDisplay(p.b);
+    }
+    if (use_lut) {
+        converter.convertImage(image, sony2fuji::ColorSpace::sRGB, sony2fuji::ColorSpace::FujiFilm_FGamut);
+        applyFLog2Encoding(image, false);
+        auto config = session->gpu_config;
+        if (gpuPipeline) config.mode = sony2fuji::GpuMode::Off;
+        auto result = sony2fuji::applyLUTWithConfig(lut, image, config);
+        if (result != sony2fuji::ErrorCode::Success) return mapError(result);
+        for (size_t i=0; i<image.pixels.size(); ++i)
+            image.pixels[i] = lerpRGB(base.pixels[i], image.pixels[i], local.lut_strength);
     } else {
-        status = ensureDisplaySRGB(image, &color_space, &is_linear);
-        if (status != SONY2FUJI_STATUS_OK) {
-            return status;
-        }
+        image = std::move(base);
     }
-
-    if (!apply_before_lut) {
-        applyToneAdjustments(image, local);
-    }
+    applyToneAdjustments(image, local);
     applyDetailAdjustments(image, local);
 
     uint32_t target_width = static_cast<uint32_t>(image.width);
@@ -1114,6 +1056,17 @@ sony2fuji_status sony2fuji_process(
     }
 
     return writeOutputBuffer(local, image, out_buffer);
+}
+
+sony2fuji_status sony2fuji_process(sony2fuji_session* session,
+    const sony2fuji_request* request, sony2fuji_buffer* buffer) {
+    try {
+        return processImpl(session, request, buffer);
+    } catch (const std::bad_alloc&) {
+        return SONY2FUJI_STATUS_OUT_OF_MEMORY;
+    } catch (const std::exception&) {
+        return SONY2FUJI_STATUS_PROCESSING_ERROR;
+    }
 }
 
 sony2fuji_status sony2fuji_compute_histogram(
@@ -1168,6 +1121,46 @@ sony2fuji_status sony2fuji_compute_histogram(
     }
 
     return SONY2FUJI_STATUS_OK;
+}
+
+sony2fuji_status sony2fuji_analyze_image(
+    const sony2fuji_buffer* image, sony2fuji_gpu_mode mode, uint32_t* rgb_bins,
+    uint32_t* shadows, uint32_t* highlights, sony2fuji_buffer* clipping_mask
+) {
+    if (!image || !image->data || !rgb_bins || !shadows || !highlights ||
+        mode < SONY2FUJI_GPU_OFF || mode > SONY2FUJI_GPU_FORCE || image->width == 0 || image->height == 0 ||
+        image->width > UINT32_MAX / 4 || static_cast<uint64_t>(image->width)*image->height > UINT32_MAX)
+        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    const size_t channels = image->pixel_format == SONY2FUJI_PIXEL_RGBA8 ? 4 :
+        (image->pixel_format == SONY2FUJI_PIXEL_RGB8 ? 3 : 0);
+    if (!channels || static_cast<size_t>(image->width)*channels > image->stride_bytes ||
+        static_cast<uint64_t>(image->stride_bytes)*(image->height-1) +
+            static_cast<uint64_t>(image->width)*channels > image->size_bytes)
+        return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+    try {
+        sony2fuji::ImageStats stats;
+        bool complete = false;
+#if defined(SONY2FUJI_ENABLE_METAL)
+        // These pixels already live on the CPU. Upload/readback costs more than
+        // the optimized counting loop on measured Apple Silicon workloads.
+        if (mode == SONY2FUJI_GPU_FORCE) complete = sony2fuji::computeImageStatsMetal(*image, stats);
+#endif
+        if (!complete) {
+            if (mode == SONY2FUJI_GPU_FORCE) return SONY2FUJI_STATUS_PROCESSING_ERROR;
+            if (!sony2fuji::computeImageStatsCPU(*image, stats)) return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+        }
+        if (clipping_mask) {
+            void* data = std::malloc(stats.clipping.size());
+            if (!data) return SONY2FUJI_STATUS_OUT_OF_MEMORY;
+            std::memcpy(data, stats.clipping.data(), stats.clipping.size());
+            *clipping_mask = {data, stats.clipping.size(), image->width, image->height,
+                image->width*4, SONY2FUJI_PIXEL_RGBA8};
+        }
+        std::copy(stats.histogram.begin(), stats.histogram.end(), rgb_bins);
+        *shadows = stats.shadows; *highlights = stats.highlights;
+        return SONY2FUJI_STATUS_OK;
+    } catch (const std::bad_alloc&) { return SONY2FUJI_STATUS_OUT_OF_MEMORY; }
+      catch (const std::exception&) { return SONY2FUJI_STATUS_PROCESSING_ERROR; }
 }
 
 void sony2fuji_release_buffer(sony2fuji_buffer* buffer) {
