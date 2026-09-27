@@ -5,11 +5,13 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Library/Developer/CommandLineTools}"
 BUILD="$ROOT/lutools/build-macos"
 APP="$ROOT/build/RawLab Mac.app"
 DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
-cmake -S "$ROOT/lutools" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" -DSONY2FUJI_ENABLE_OPENMP=OFF -DBUILD_SHARED_LIB=OFF -DBUILD_TESTING=ON
+cmake -S "$ROOT/lutools" -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" -DSONY2FUJI_ENABLE_GPU=ON -DSONY2FUJI_ENABLE_OPENMP=OFF -DBUILD_SHARED_LIB=OFF -DBUILD_TESTING=ON
 cmake --build "$BUILD" -j "$(sysctl -n hw.ncpu)"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/LUTs" "$APP/Contents/Resources/FilmIcons" "$APP/Contents/Frameworks"
 mkdir -p "$APP/Contents/Resources/Licenses"
 cp "$ROOT/lutools/third_party/Adobe-DNG-SDK-LICENSE.txt" "$APP/Contents/Resources/Licenses/"
+cp -R "$ROOT/RawLabMac/Resources/Licenses/." "$APP/Contents/Resources/Licenses/"
+cp "$ROOT/RawLabMac/Resources/ThirdPartyNotices.md" "$APP/Contents/Resources/Licenses/"
 SDK="${SDKROOT:-$(xcrun --show-sdk-path)}"
 # The CLT 27 SDK exposes SwiftUI macros without shipping their compiler plugin.
 if [ -z "${SDKROOT:-}" ] && [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk ]; then
@@ -35,11 +37,14 @@ for artwork in "$ROOT"/RawLabMac/Resources/FilmIcons/*; do
     esac
 done
 # Package Homebrew dependencies so this local app does not depend on their install paths.
+# Refresh generated copies: existing files may belong to an older dependency build.
+rm -f "$APP/Contents/Frameworks/"*.dylib
 embed_dependency() {
     local binary="$1"
+    local dependency name
     while IFS= read -r dependency; do
         case "$dependency" in /opt/homebrew/*|/usr/local/*)
-            local name="$(basename "$dependency")"
+            name="$(basename "$dependency")"
             if [ ! -f "$APP/Contents/Frameworks/$name" ]; then
                 cp "$dependency" "$APP/Contents/Frameworks/$name"
                 chmod u+w "$APP/Contents/Frameworks/$name"
@@ -54,4 +59,5 @@ embed_dependency() {
 }
 embed_dependency "$APP/Contents/MacOS/RawLabMac"
 codesign --force --deep --sign - "$APP"
+bash "$ROOT/RawLabMac/tests/bundle.sh" "$APP"
 echo "$APP"

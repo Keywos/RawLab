@@ -2,7 +2,15 @@
 
 原生 SwiftUI/AppKit 桌面验证客户端，与 CLI/iOS 共用 C++ 处理管线。当前构建产物针对本机 Apple Silicon 和 macOS 26+，没有宣称在其他 macOS 版本验证通过。
 
+## 功能预览
+
+![RawLab Mac：中性渲染与 Velvia 胶片效果并排对比，底部提供胶片选择和参数调整](../docs/images/rawlab-mac-velvia.png)
+
+左侧为中性渲染，右侧为 Velvia 胶片效果；底部集中提供胶片选择及曝光、明暗、色彩、白平衡和锐化调整。
+
 ## 构建和启动
+
+预编译版本：[GitHub Release v0.1](https://github.com/dancancer/rawtools/releases/tag/v0.1)。下载 `RawLab-Mac-0.1-macOS-arm64.zip` 后解压，可将 `RawLab Mac.app` 放入 Applications。此产物仅支持 Apple Silicon 和 macOS 26+；采用 ad-hoc 签名，没有 Developer ID 签名或 Apple 公证，macOS 可能阻止默认打开。
 
 在仓库根目录执行：
 
@@ -14,6 +22,8 @@ open "build/RawLab Mac.app"
 依赖 CMake、pkg-config、LibRaw 和 Apple Command Line Tools。当前 Homebrew LibRaw 的最低系统版本是 26，所以脚本默认以 26.0 为 deployment target；具备更低版本依赖时可显式设置 `MACOSX_DEPLOYMENT_TARGET`。CLT 27 的 SwiftUI 宏插件不完整时，脚本使用本机已有的 26.5 SDK，也可用 `SDKROOT` 指定。
 
 构建脚本打包所需 Homebrew 动态库并进行本地 ad-hoc 签名，不做分发公证，不修改系统 Xcode license 状态。
+
+构建时会重新复制动态依赖、将递归依赖改为应用内 `@rpath`，并运行 `tests/bundle.sh` 检查不存在本机 Homebrew 路径。依赖许可证随应用保存在 `Contents/Resources/Licenses`；[第三方说明](Resources/ThirdPartyNotices.md)记录来源，Release 同时提供 LibRaw 对应版本的源代码归档。
 
 应用图标采用深灰底上的黄色/青色交叠画幅，表达 RAW 与显影结果之间的色彩转换。无相机、光圈或品牌文字，使用扁平几何图形。源图位于 `Resources/AppIcon.png`；构建时由 `build-icon.sh` 生成覆盖 16–1024 像素的原生 `.icns`，并通过 `CFBundleIconFile` 注册。图像生成说明见 `Resources/AppIcon.md`。
 
