@@ -1,4 +1,5 @@
 #include "sony2fuji/gpu/lut_gpu.h"
+#include <cstring>
 
 #include "gpu/lut_gpu_internal.h"
 
@@ -100,10 +101,9 @@ id<MTLBuffer> wrapPixelBuffer(MetalContext& context, sony2fuji::ImageData& image
     if (length == 0) {
         return nil;
     }
-    return [context.device newBufferWithBytesNoCopy:image.pixels.data()
+    return [context.device newBufferWithBytes:image.pixels.data()
                                              length:length
-                                            options:MTLResourceStorageModeShared
-                                        deallocator:nil];
+                                            options:MTLResourceStorageModeShared];
 }
 
 id<MTLBuffer> createParamsBuffer(MetalContext& context, uint32_t pixel_count, uint32_t lut_size) {
@@ -150,7 +150,7 @@ bool runCompute(
 
     [command_buffer commit];
     [command_buffer waitUntilCompleted];
-    return true;
+    return command_buffer.status == MTLCommandBufferStatusCompleted;
 }
 
 }
@@ -174,8 +174,10 @@ bool applyLutMetal(const LUT3D& lut, ImageData& image) {
     if (!pixel_buffer) {
         return false;
     }
-    return runCompute(*context, pixel_buffer, lut_texture, pixel_count,
-                      static_cast<uint32_t>(lut.getSize()));
+    if (!runCompute(*context, pixel_buffer, lut_texture, pixel_count,
+                    static_cast<uint32_t>(lut.getSize()))) return false;
+    std::memcpy(image.pixels.data(), pixel_buffer.contents, image.pixels.size() * sizeof(RGB));
+    return true;
 }
 
 }

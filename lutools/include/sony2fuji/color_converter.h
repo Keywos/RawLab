@@ -127,7 +127,8 @@ public:
     // F-Log2 options.
     // ============================================================================
     struct FLog2Options {
-        bool normalizeToRange = true;
+        // Retained for source compatibility; encoding no longer rescales exposure.
+        bool normalizeToRange = false;
         bool clampOnly = false;
         bool enableDiagnostics = false;
     };

@@ -57,7 +57,6 @@ build_desktop() {
     print_header "构建桌面版本"
 
     BUILD_DIR="build"
-    rm -rf "$BUILD_DIR"
     mkdir -p "$BUILD_DIR"
     cd "$BUILD_DIR"
 
@@ -72,7 +71,7 @@ build_desktop() {
     cd ..
 
     print_info "构建完成!"
-    print_info "可执行文件: $BUILD_DIR/sony2fuji_cli"
+    print_info "可执行文件: $BUILD_DIR/sony2fuji"
     print_info "共享库: $BUILD_DIR/libsony2fuji.so (或 .dylib)"
 }
 
@@ -173,7 +172,7 @@ clean() {
 run_tests() {
     print_header "运行测试"
 
-    if [ ! -f "build/sony2fuji_cli" ]; then
+    if [ ! -f "build/core_tests" ]; then
         print_error "请先构建项目"
         exit 1
     fi
@@ -183,10 +182,7 @@ run_tests() {
         exit 1
     fi
 
-    print_info "测试 LUT 解析..."
-    # 这里可以添加测试代码
-
-    print_info "测试完成"
+    ctest --test-dir build --output-on-failure
 }
 
 # 显示帮助

@@ -56,13 +56,16 @@ typedef enum sony2fuji_output_target {
 typedef enum sony2fuji_wb_mode {
     SONY2FUJI_WB_CAMERA = 0,
     SONY2FUJI_WB_AUTO = 1,
-    SONY2FUJI_WB_CUSTOM = 2
+    SONY2FUJI_WB_CUSTOM = 2,
+    // RAW-only absolute Kelvin/tint, applied in camera space before demosaic.
+    SONY2FUJI_WB_TEMPERATURE = 3
 } sony2fuji_wb_mode;
 
 typedef enum sony2fuji_size_mode {
     SONY2FUJI_SIZE_EXACT = 0,
     SONY2FUJI_SIZE_FIT_LONG_EDGE = 1,
-    SONY2FUJI_SIZE_FIT_SHORT_EDGE = 2
+    SONY2FUJI_SIZE_FIT_SHORT_EDGE = 2,
+    SONY2FUJI_SIZE_NATIVE = 3
 } sony2fuji_size_mode;
 
 typedef enum sony2fuji_intent {
@@ -83,6 +86,12 @@ typedef enum sony2fuji_gpu_mode {
     SONY2FUJI_GPU_AUTO = 1,
     SONY2FUJI_GPU_FORCE = 2
 } sony2fuji_gpu_mode;
+
+typedef enum sony2fuji_raw_exposure_mode {
+    SONY2FUJI_EXPOSURE_SCENE = 0,
+    SONY2FUJI_EXPOSURE_PREVIEW = 1,
+    SONY2FUJI_EXPOSURE_SENSOR = 2
+} sony2fuji_raw_exposure_mode;
 
 // ============================================================================
 // Request/Buffer
@@ -154,6 +163,11 @@ typedef struct sony2fuji_gpu_config {
 
 typedef struct sony2fuji_session sony2fuji_session;
 
+typedef enum sony2fuji_render_backend {
+    SONY2FUJI_BACKEND_CPU = 0,
+    SONY2FUJI_BACKEND_METAL = 1
+} sony2fuji_render_backend;
+
 // ============================================================================
 // API
 // ============================================================================
@@ -161,6 +175,35 @@ typedef struct sony2fuji_session sony2fuji_session;
 sony2fuji_status sony2fuji_session_create(sony2fuji_session** out_session);
 
 sony2fuji_status sony2fuji_session_destroy(sony2fuji_session* session);
+
+// Reduced RAW processing is allowed only for PREVIEW + BUFFER requests.
+// FINAL requests and every file export ignore this flag.
+sony2fuji_status sony2fuji_session_set_interactive_preview(sony2fuji_session* session, int32_t enabled);
+sony2fuji_render_backend sony2fuji_session_get_last_backend(const sony2fuji_session* session);
+
+// Exact 256-bin channel-major RGB counts and an optional packed RGBA8 clipping mask.
+// Auto prefers CPU for CPU-resident bytes to avoid upload/readback overhead.
+// Force requires Metal and reports failure instead of falling back.
+sony2fuji_status sony2fuji_analyze_image(
+    const sony2fuji_buffer* image, sony2fuji_gpu_mode mode, uint32_t* rgb_bins,
+    uint32_t* shadows, uint32_t* highlights, sony2fuji_buffer* clipping_mask
+);
+
+// Does not change request v2 layout. The mode participates in the RAW cache key.
+sony2fuji_status sony2fuji_session_set_raw_exposure_mode(
+    sony2fuji_session* session, sony2fuji_raw_exposure_mode mode
+);
+
+// Offsets of the last successfully decoded RAW, excluding user exposure.
+sony2fuji_status sony2fuji_session_get_raw_exposure(
+    const sony2fuji_session* session, float* baseline_ev, float* metadata_ev
+);
+
+// Estimated from as-shot camera gains and the camera calibration, not fixed 6500 K.
+// UNSUPPORTED means the file lacks usable calibration; camera WB remains usable.
+sony2fuji_status sony2fuji_session_get_raw_white_balance(
+    const sony2fuji_session* session, float* temperature, float* tint
+);
 
 sony2fuji_status sony2fuji_session_set_gpu_config(
     sony2fuji_session* session,

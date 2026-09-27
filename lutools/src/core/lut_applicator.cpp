@@ -21,9 +21,11 @@ RGB LUTApplicator::apply(const RGB& input) const {
     }
 
     // 将输入值限制在 [0, 1] 范围内
-    float r = std::max(0.0f, std::min(1.0f, input.r));
-    float g = std::max(0.0f, std::min(1.0f, input.g));
-    float b = std::max(0.0f, std::min(1.0f, input.b));
+    const auto low = lut_->domainMin();
+    const auto high = lut_->domainMax();
+    float r = std::clamp((input.r-low.r)/(high.r-low.r), 0.0f, 1.0f);
+    float g = std::clamp((input.g-low.g)/(high.g-low.g), 0.0f, 1.0f);
+    float b = std::clamp((input.b-low.b)/(high.b-low.b), 0.0f, 1.0f);
 
     // 应用三线性插值
     return trilinearInterpolate(r, g, b);

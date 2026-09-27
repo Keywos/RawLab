@@ -1,4 +1,5 @@
 #include "sony2fuji/sony2fuji.h"
+#include "sony2fuji/ffi/sony2fuji_c.h"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -9,54 +10,6 @@
 
 using namespace sony2fuji;
 
-bool isLutDiagnosticsEnabled() {
-    const char* value = std::getenv("SONY2FUJI_LUT_DIAG");
-    return value != nullptr && value[0] != '\0';
-}
-
-enum class AcesConversionMode {
-    Disabled,
-    AssumeAP0,
-    AssumeAP1
-};
-
-AcesConversionMode getAcesConversionMode() {
-    const char* value = std::getenv("SONY2FUJI_ACES_MODE");
-    if (!value || value[0] == '\0') {
-        return AcesConversionMode::Disabled;
-    }
-
-    std::string mode(value);
-    std::transform(mode.begin(), mode.end(), mode.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-    if (mode == "off" || mode == "disabled" || mode == "adobe") {
-        return AcesConversionMode::Disabled;
-    }
-
-    if (mode == "ap1" || mode == "acescg" || mode == "skip") {
-        return AcesConversionMode::AssumeAP1;
-    }
-
-    return AcesConversionMode::AssumeAP0;
-}
-
-void applyFLog2Encoding(ImageData& image, bool clamp_only) {
-    GammaConverter::FLog2Options options;
-    options.normalizeToRange = !clamp_only;
-    options.clampOnly = clamp_only;
-    options.enableDiagnostics = isLutDiagnosticsEnabled();
-
-    GammaConverter::FLog2Diagnostics diagnostics = GammaConverter::applyFLog2ToImage(image, options);
-    if (options.enableDiagnostics) {
-        std::cout << "  F-Log2 diagnostics: min=" << diagnostics.min_linear
-                  << " max=" << diagnostics.max_linear
-                  << " scale=" << diagnostics.scale
-                  << " offset=" << diagnostics.offset
-                  << " neg=" << diagnostics.negative_pixels
-                  << " over=" << diagnostics.over_pixels << "\n";
-    }
-}
 
 void printUsage(const char* programName) {
     std::cout << "Sony to Fuji LUT Tool v" << getVersionString() << "\n\n";
@@ -72,6 +25,7 @@ void printUsage(const char* programName) {
     std::cout << "  --auto-wb              使用自动白平衡\n";
     std::cout << "  --camera-wb            使用相机白平衡 (默认)\n";
     std::cout << "  --exposure <EV>        曝光补偿 (默认: 0.0)\n";
+    std::cout << "  --raw-exposure <mode>  曝光基准: scene (默认), preview, sensor\n";
     std::cout << "  --brightness <value>   亮度调整 (默认: 1.0)\n";
     std::cout << "  -h, --help             显示此帮助信息\n";
     std::cout << "  -v, --version          显示版本信息\n\n";
@@ -99,6 +53,7 @@ struct Options {
     float exposure = 0.0f;
     float brightness = 1.0f;
     bool noLut = false;  // 新增：不应用 LUT
+    sony2fuji_raw_exposure_mode rawExposure = SONY2FUJI_EXPOSURE_SCENE;
 };
 
 bool parseArguments(int argc, char* argv[], Options& options) {
@@ -145,6 +100,13 @@ bool parseArguments(int argc, char* argv[], Options& options) {
         } else if (arg == "--camera-wb") {
             options.cameraWhiteBalance = true;
             options.autoWhiteBalance = false;
+        } else if (arg == "--raw-exposure") {
+            if (i+1>=argc) return false;
+            const std::string mode=argv[++i];
+            if (mode=="scene") options.rawExposure=SONY2FUJI_EXPOSURE_SCENE;
+            else if (mode=="preview") options.rawExposure=SONY2FUJI_EXPOSURE_PREVIEW;
+            else if (mode=="sensor") options.rawExposure=SONY2FUJI_EXPOSURE_SENSOR;
+            else { std::cerr << "Invalid RAW exposure mode: " << mode << '\n'; return false; }
         } else if (arg == "--exposure") {
             if (i + 1 < argc) {
                 options.exposure = std::stof(argv[++i]);
@@ -210,136 +172,35 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "===========================================\n";
-    std::cout << "Sony to Fuji LUT Tool v" << getVersionString() << "\n";
-    std::cout << "===========================================\n\n";
-
-    try {
-        // 1. 加载 RAW 文件
-        std::cout << "[1/5] 加载 RAW 文件...\n";
-        std::cout << "  输入: " << options.inputFile << "\n";
-
-        RAWProcessor processor;
-        ErrorCode result = processor.loadFile(options.inputFile);
-        if (result != ErrorCode::Success) {
-            std::cerr << "错误: 无法加载 RAW 文件\n";
-            return 1;
-        }
-
-        std::cout << "  相机: " << processor.getCameraMake() << " " << processor.getCameraModel() << "\n";
-        std::cout << "  尺寸: " << processor.getWidth() << " x " << processor.getHeight() << "\n";
-
-        // 2. 处理 RAW 数据
-        std::cout << "\n[2/5] 处理 RAW 数据...\n";
-
-        RAWProcessOptions rawOptions;
-        rawOptions.useAutoWhiteBalance = options.autoWhiteBalance;
-        rawOptions.useCameraWhiteBalance = options.cameraWhiteBalance;
-        rawOptions.exposure = options.exposure;
-        rawOptions.brightness = options.brightness;
-        rawOptions.outputLinear = !options.noLut;
-        AcesConversionMode acesMode = getAcesConversionMode();
-        bool useAces = (acesMode != AcesConversionMode::Disabled);
-        rawOptions.outputAces = !options.noLut && useAces;
-        rawOptions.outputAdobe = !options.noLut && !useAces;
-
-        ImageData image;
-        result = processor.process(rawOptions, image);
-        if (result != ErrorCode::Success) {
-            std::cerr << "错误: 处理 RAW 数据失败\n";
-            return 1;
-        }
-
-        std::cout << "  白平衡: " << (options.autoWhiteBalance ? "自动" : "相机") << "\n";
-        std::cout << "  曝光补偿: " << options.exposure << " EV\n";
-
-        // 3. 色彩空间转换和 LUT 应用 (可选)
-        if (!options.noLut) {
-            std::cout << "\n[3/5] 色彩空间转换...\n";
-            if (rawOptions.outputAces) {
-                if (acesMode == AcesConversionMode::AssumeAP1) {
-                    std::cout << "  ACEScg (assumed) → Fuji F-Gamut\n";
-                } else {
-                    std::cout << "  ACES2065-1 → ACEScg → Fuji F-Gamut\n";
-                }
-            } else {
-                std::cout << "  Adobe RGB → Fuji F-Gamut\n";
-            }
-
-            ColorConverter converter;
-            if (rawOptions.outputAces) {
-                if (acesMode == AcesConversionMode::AssumeAP0) {
-                    result = converter.convertImage(
-                        image,
-                        ColorSpace::ACES2065_1,
-                        ColorSpace::ACEScg
-                    );
-                } else {
-                    result = ErrorCode::Success;
-                }
-            }
-            if (result != ErrorCode::Success) {
-                std::cerr << "错误: 色彩空间转换失败\n";
-                return 1;
-            }
-
-            if (rawOptions.outputAces) {
-                result = converter.convertImage(image,
-                                               ColorSpace::ACEScg,
-                                               ColorSpace::FujiFilm_FGamut);
-            } else {
-                result = converter.convertImage(image,
-                                               ColorSpace::AdobeRGB,
-                                               ColorSpace::FujiFilm_FGamut);
-            }
-            if (result != ErrorCode::Success) {
-                std::cerr << "错误: 色彩空间转换失败\n";
-                return 1;
-            }
-
-            applyFLog2Encoding(image, !rawOptions.outputAces);
-
-            // 4. 加载和应用 LUT
-            std::cout << "\n[4/5] 应用 LUT...\n";
-            std::cout << "  LUT 文件: " << options.lutFile << "\n";
-
-            auto lut = LUTParser::loadLUTCached(options.lutFile);
-            if (!lut) {
-                std::cerr << "错误: 加载 LUT 文件失败\n";
-                return 1;
-            }
-
-            LUTApplicator applicator(lut);
-            result = applicator.applyToImage(image);
-            if (result != ErrorCode::Success) {
-                std::cerr << "错误: 应用 LUT 失败\n";
-                return 1;
-            }
-        } else {
-            std::cout << "\n[3/5] 使用相机色彩矩阵输出 sRGB (--no-lut 模式)\n";
-            std::cout << "\n[4/5] 跳过 LUT 应用 (--no-lut 模式)\n";
-            std::cout << "  sRGB + gamma + 自动亮度\n";
-        }
-
-        // 5. 保存结果
-        std::cout << "\n[5/5] 保存结果...\n";
-        std::cout << "  输出: " << options.outputFile << "\n";
-
-        OutputFormat format = getOutputFormat(options.outputFile);
-        result = ImageEncoder::saveImage(image, options.outputFile, format, options.quality);
-        if (result != ErrorCode::Success) {
-            std::cerr << "错误: 保存图像失败\n";
-            return 1;
-        }
-
-        std::cout << "\n===========================================\n";
-        std::cout << "处理完成!\n";
-        std::cout << "===========================================\n";
-
-        return 0;
-
-    } catch (const std::exception& e) {
-        std::cerr << "错误: " << e.what() << "\n";
+    sony2fuji_request request{};
+    request.version = SONY2FUJI_REQUEST_VERSION;
+    request.struct_size = sizeof(request);
+    request.input_type = SONY2FUJI_INPUT_RAW;
+    request.input_path = options.inputFile.c_str();
+    request.lut_path = options.noLut ? nullptr : options.lutFile.c_str();
+    request.lut_strength = 1;
+    request.wb_mode = options.autoWhiteBalance ? SONY2FUJI_WB_AUTO : SONY2FUJI_WB_CAMERA;
+    request.exposure_ev = options.exposure;
+    request.brightness = options.brightness;
+    request.contrast = request.saturation = 1;
+    request.temperature = 6500;
+    request.size_mode = SONY2FUJI_SIZE_NATIVE;
+    request.intent = SONY2FUJI_INTENT_FINAL;
+    request.output_target = SONY2FUJI_TARGET_FILE;
+    request.output_path = options.outputFile.c_str();
+    request.output_format = getOutputFormat(options.outputFile) == OutputFormat::PNG ?
+        SONY2FUJI_OUTPUT_PNG : SONY2FUJI_OUTPUT_JPEG;
+    request.jpeg_quality = options.quality;
+    sony2fuji_session* session = nullptr;
+    auto status = sony2fuji_session_create(&session);
+    if (status == SONY2FUJI_STATUS_OK) status = sony2fuji_session_set_raw_exposure_mode(session,options.rawExposure);
+    if (status == SONY2FUJI_STATUS_OK) status = sony2fuji_process(session, &request, nullptr);
+    sony2fuji_session_destroy(session);
+    if (status != SONY2FUJI_STATUS_OK) {
+        std::cerr << "Processing failed: " << sony2fuji_status_message(status)
+                  << ". Use a supported F-Gamut/F-Log2 film LUT, not a Log-output LUT.\n";
         return 1;
     }
+    std::cout << "Saved: " << options.outputFile << '\n';
+    return 0;
 }

@@ -2,6 +2,7 @@
 
 #include "gpu/lut_gpu_internal.h"
 #include "sony2fuji/lut_applicator.h"
+#include <algorithm>
 
 namespace sony2fuji {
 
@@ -85,7 +86,16 @@ ErrorCode applyLUTWithConfig(
     }
 
     if (config.mode != GpuMode::Off) {
-        if (tryMetal(*lut, image) || tryGles(*lut, image)) {
+        ImageData staged = image;
+        const auto low = lut->domainMin();
+        const auto high = lut->domainMax();
+        for (auto& p : staged.pixels) {
+            p.r = std::clamp((p.r-low.r)/(high.r-low.r), 0.0f, 1.0f);
+            p.g = std::clamp((p.g-low.g)/(high.g-low.g), 0.0f, 1.0f);
+            p.b = std::clamp((p.b-low.b)/(high.b-low.b), 0.0f, 1.0f);
+        }
+        if (tryMetal(*lut, staged) || tryGles(*lut, staged)) {
+            image = std::move(staged);
             return ErrorCode::Success;
         }
         if (config.mode == GpuMode::Force) {

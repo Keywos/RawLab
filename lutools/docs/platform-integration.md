@@ -2,6 +2,8 @@
 
 Sony2Fuji 库支持多平台集成,包括桌面命令行工具和移动端应用。
 
+RAW 默认采用标准显影曝光基准。`sony2fuji_session_set_raw_exposure_mode` 可选择 `SCENE`、`PREVIEW`、`SENSOR`；`sony2fuji_session_get_raw_exposure` 返回最近成功解码 RAW 的基础 EV 和元数据 EV（不含用户曝光）。新函数不改变 v2 request 布局，切换模式会更新 RAW 缓存身份。中性输出使用独立显示映射，富士 LUT 不叠加该映射，详见 [色彩契约](color-contract.md)。
+
 ## 支持的平台
 
 - **命令行工具**: Linux, macOS, Windows
@@ -111,27 +113,7 @@ make -j$(nproc)
 
 ### C++ (核心 API)
 
-```cpp
-// 1. 加载 RAW
-RAWProcessor processor;
-processor.loadFile("input.ARW");
-
-// 2. 处理
-ImageData image;
-processor.process(options, image);
-
-// 3. 转换色彩空间
-ColorConverter converter;
-converter.convertImage(image, ColorSpace::SonyNative, ColorSpace::FujiFilm_FGamut);
-
-// 4. 应用 LUT
-auto lut = LUTParser::loadLUT("lut.cube");
-LUTApplicator applicator(lut);
-applicator.applyToImage(image);
-
-// 5. 保存
-ImageEncoder::saveJPEG(image, "output.jpg");
-```
+使用 `sony2fuji_process` C API 共享完整流程，不再手动拼接 native 矩阵和 LUT。可编译示例见 `examples/simple_example.cpp`；输出原始有效尺寸使用 `SONY2FUJI_SIZE_NATIVE`。输入/显示的色彩约定见 [color-contract.md](color-contract.md)。
 
 ### Swift (iOS)
 
