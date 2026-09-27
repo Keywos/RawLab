@@ -1,417 +1,180 @@
-# iOS 集成指南
+# iOS 集成指南 / iOS Integration
 
-将 Sony2Fuji 核心库集成到 iOS 应用程序中。
+通过共享 C API 将 Sony2Fuji 核心接入 Swift/Objective-C 应用。此目录是集成文档，不包含可直接运行的独立 iOS 示例项目。
 
-## 1. 构建 iOS Framework
+Integrate the Sony2Fuji core into a Swift/Objective-C app through the shared C API. This directory contains integration documentation, not a standalone runnable iOS sample.
 
-### 1.1 使用 CMake 构建
+旧版文档中的直接 C++ 桥接示例未覆盖完整的 F-Log2 和显示输出处理，已改为调用共享照片 API，避免移动端实现另一套色彩流程。桌面验证结果不代表 iOS 设备已验证。
 
-```bash
-# 配置 iOS 构建
-mkdir build-ios && cd build-ios
+The former direct-C++ bridge examples omitted parts of F-Log2 and display-output processing. Use the shared photo API instead of implementing a second mobile color pipeline. Desktop verification does not establish iOS device coverage.
 
-cmake .. \
-  -GXcode \
-  -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-  -DCMAKE_OSX_ARCHITECTURES="arm64" \
-  -DBUILD_SHARED_LIB=ON \
-  -DBUILD_CLI=OFF \
-  -DIOS=ON
+## 1. 构建准备 / Build Prerequisites
 
-# 构建
-cmake --build . --config Release
+需要 macOS、完整 Xcode/iOS SDK、CMake、pkg-config，以及为目标平台和架构编译的 LibRaw 和依赖。不可把 macOS Homebrew LibRaw 链接到 iOS。
+
+Requires macOS, full Xcode with the iOS SDK, CMake, pkg-config, and LibRaw/dependencies built for the target platform and architecture. Do not link macOS Homebrew LibRaw into iOS.
+
+仓库脚本预期以下 LibRaw pkg-config 目录，详见 [build.sh](../../build.sh)：
+
+The repository script expects these LibRaw pkg-config directories; see [build.sh](../../build.sh):
+
+```text
+lutools/build-ios-libraw/install/iphoneos-arm64/lib/pkgconfig
+lutools/build-ios-libraw/install/iphonesimulator-arm64/lib/pkgconfig
+lutools/build-ios-libraw/install/iphonesimulator-x86_64/lib/pkgconfig
 ```
 
-### 1.2 输出产物
+准备好依赖后，从仓库根目录运行：
 
-构建完成后,你会得到:
-- `libsony2fuji.dylib` - 动态库
-- 或 `sony2fuji.framework` - iOS Framework (推荐)
+Once dependencies are ready, run from the repository root:
 
-### 1.3 创建 XCFramework (推荐)
+```bash
+cd lutools
+bash build.sh ios
+```
 
-如果你已有 device + simulator framework,可以创建 XCFramework:
+该脚本在选择 iOS 目标前还会运行默认环境的 `pkg-config --exists libraw` 检查。因此默认 pkg-config 搜索路径也需要可发现 LibRaw；宿主机安装只能满足此预检，不能替代上面的 iOS 依赖。只准备了目标平台依赖时，可使用下面的手动 CMake 命令绕过该宿主预检。
+
+Before selecting an iOS target, the script also runs `pkg-config --exists libraw` in the default environment. LibRaw metadata must therefore be discoverable on the default pkg-config search path. A host installation can satisfy this preflight but cannot replace the iOS dependencies above. If only target-platform dependencies are available, use the manual CMake command below to bypass that host preflight.
+
+该脚本会重建自己的 `build-ios-*` 输出目录。手动构建单个设备目标时，可从仓库根目录运行以下命令；`DEVELOPER_DIR` 必须指向可用且已配置的完整 Xcode。
+
+The script recreates its own `build-ios-*` output directories. To build one device target manually, run the following from the repository root. `DEVELOPER_DIR` must point to an available, configured full Xcode installation.
+
+```bash
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+PKG_CONFIG_PATH="$PWD/lutools/build-ios-libraw/install/iphoneos-arm64/lib/pkgconfig" \
+cmake -S lutools -B lutools/build-ios-iphoneos-arm64 -GXcode \
+  -DCMAKE_SYSTEM_NAME=iOS \
+  -DCMAKE_OSX_SYSROOT="$(xcrun --sdk iphoneos --show-sdk-path)" \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+  -DBUILD_SHARED_LIB=ON -DBUILD_CLI=OFF -DIOS=ON
+cmake --build lutools/build-ios-iphoneos-arm64 --config Release
+```
+
+`13.0` 是当前核心构建脚本的目标值，不是已验证的应用兼容性承诺。应检查生成物、依赖和实际目标设备。
+
+`13.0` is the current core script's deployment setting, not a verified app compatibility claim. Check the resulting binaries, dependencies and actual target devices.
+
+## 2. Framework 与 Xcode / Frameworks and Xcode
+
+当前 CMake 的 iOS 共享目标生成 `sony2fuji.framework`。设备与模拟器构建必须分别使用对应 SDK 和 LibRaw。
+
+The current iOS shared CMake target produces `sony2fuji.framework`. Device and simulator builds require their corresponding SDK and LibRaw.
+
+已有设备和 arm64 模拟器 Framework 后，从仓库根目录打包：
+
+After building device and arm64-simulator frameworks, package them from the repository root:
 
 ```bash
 xcodebuild -create-xcframework \
-  -framework build-ios-iphoneos-arm64/Release-iphoneos/sony2fuji.framework \
-  -framework build-ios-iphonesimulator-x86_64/Release-iphonesimulator/sony2fuji.framework \
-  -output build-ios/sony2fuji.xcframework
+  -framework lutools/build-ios-iphoneos-arm64/Release-iphoneos/sony2fuji.framework \
+  -framework lutools/build-ios-iphonesimulator-arm64/Release-iphonesimulator/sony2fuji.framework \
+  -output lutools/build-ios/sony2fuji.xcframework
 ```
 
-## 2. 添加到 Xcode 项目
+以上示例提供 arm64 模拟器切片；需要 Intel 模拟器时，应先准备包含所需模拟器架构的 Framework，再打包。不要把两个同平台的单架构模拟器 Framework 当成独立平台重复加入。
 
-### 2.1 添加 Framework
+This example includes an arm64 simulator slice. For Intel simulators, first prepare a simulator framework containing the required simulator architectures. Do not add two single-architecture simulator frameworks as if they were distinct platforms.
 
-1. 将 `sony2fuji.framework` 或 `sony2fuji.xcframework` 拖到 Xcode 项目中
-2. 在项目设置中,选择你的 Target
-3. 在 "General" 标签下,将 Framework 添加到 "Frameworks, Libraries, and Embedded Content"
-4. 确保设置为 "Embed & Sign"
+1. 将 Framework/XCFramework 加入目标的 `Frameworks, Libraries, and Embedded Content`，动态 Framework 使用 `Embed & Sign`。
+   Add the framework/XCFramework to the target's `Frameworks, Libraries, and Embedded Content`; use `Embed & Sign` for the dynamic framework.
+2. 配置头文件搜索路径指向 `lutools/include`，在桥接头中引入下面的 C 头文件。
+   Point header search paths to `lutools/include` and import the C header below in the bridging header.
+3. 同时处理目标架构的 LibRaw、C++ 运行库和其他动态依赖，并检查签名与加载路径。
+   Include target-architecture LibRaw, the C++ runtime and other dynamic dependencies, checking signatures and load paths.
 
-### 2.2 添加头文件搜索路径
-
-在 Build Settings 中添加:
+```objc
+#include "sony2fuji/ffi/sony2fuji_c.h"
 ```
-HEADER_SEARCH_PATHS = $(PROJECT_DIR)/path/to/sony2fuji/include
-```
 
-## 4. C API 文档
+## 3. 共享 C API / Shared C API
 
-更轻量的 Swift/ObjC 接入建议使用 C FFI,详见:
+以下示例演示一次全分辨率文件导出。输入、LUT 和输出路径由调用方提供，输出不得覆盖原 RAW；不要用 `EXACT` 配合零宽高表示原尺寸。
 
-- `docs/ios-api.md`
-
-## GPU 加速 (Metal)
-
-C API:
+The example performs one full-resolution file export. The caller supplies input, LUT and output paths; output must not overwrite the RAW. Do not use `EXACT` with zero dimensions to request native size.
 
 ```c
-sony2fuji_gpu_config gpu_config = {
-    .version = SONY2FUJI_GPU_CONFIG_VERSION,
-    .struct_size = sizeof(sony2fuji_gpu_config),
-    .mode = SONY2FUJI_GPU_AUTO
-};
-sony2fuji_session_set_gpu_config(session, &gpu_config);
-```
+#include "sony2fuji/ffi/sony2fuji_c.h"
 
-C++:
+sony2fuji_status render_photo(const char* input, const char* lut, const char* output) {
+    sony2fuji_session* session = NULL;
+    sony2fuji_status status = sony2fuji_session_create(&session);
+    if (status != SONY2FUJI_STATUS_OK) return status;
 
-```cpp
-sony2fuji::GpuConfig config;
-config.mode = sony2fuji::GpuMode::Auto;
-sony2fuji::applyLUTWithConfig(lut, *imageData, config);
-```
+    sony2fuji_request request = {0};
+    request.version = SONY2FUJI_REQUEST_VERSION;
+    request.struct_size = sizeof(request);
+    request.input_type = SONY2FUJI_INPUT_RAW;
+    request.input_path = input;
+    request.lut_path = lut;
+    request.lut_strength = 1.0f;
+    request.wb_mode = SONY2FUJI_WB_CAMERA;
+    request.temperature = 6500.0f;
+    request.brightness = request.contrast = request.saturation = 1.0f;
+    request.intent = SONY2FUJI_INTENT_FINAL;
+    request.size_mode = SONY2FUJI_SIZE_NATIVE;
+    request.output_target = SONY2FUJI_TARGET_FILE;
+    request.output_path = output;
+    request.output_format = SONY2FUJI_OUTPUT_PNG;
 
-## 3. Swift 封装
-
-创建一个 Swift wrapper 来简化 C++ 接口的使用。
-
-### 3.1 创建 Objective-C++ 桥接文件
-
-**Sony2FujiBridge.h**
-```objc
-#import <Foundation/Foundation.h>
-
-NS_ASSUME_NONNULL_BEGIN
-
-@interface Sony2FujiProcessor : NSObject
-
-- (instancetype)init;
-- (BOOL)loadRAWFile:(NSString *)filepath error:(NSError **)error;
-- (BOOL)applyLUT:(NSString *)lutPath error:(NSError **)error;
-- (BOOL)saveImage:(NSString *)outputPath
-          quality:(NSInteger)quality
-            error:(NSError **)error;
-
-@property (nonatomic, readonly) NSInteger width;
-@property (nonatomic, readonly) NSInteger height;
-@property (nonatomic, copy, readonly) NSString *cameraMake;
-@property (nonatomic, copy, readonly) NSString *cameraModel;
-
-@end
-
-NS_ASSUME_NONNULL_END
-```
-
-**Sony2FujiBridge.mm** (Objective-C++)
-```objc
-#import "Sony2FujiBridge.h"
-#include "sony2fuji/sony2fuji.h"
-#include <memory>
-
-using namespace sony2fuji;
-
-@interface Sony2FujiProcessor() {
-    std::unique_ptr<RAWProcessor> _processor;
-    std::unique_ptr<ImageData> _imageData;
-    std::shared_ptr<LUT3D> _lut;
-}
-@end
-
-@implementation Sony2FujiProcessor
-
-- (instancetype)init {
-    if (self = [super init]) {
-        _processor = std::make_unique<RAWProcessor>();
-        _imageData = std::make_unique<ImageData>();
-    }
-    return self;
-}
-
-- (BOOL)loadRAWFile:(NSString *)filepath error:(NSError **)error {
-    ErrorCode result = _processor->loadFile(filepath.UTF8String);
-
-    if (result == ErrorCode::Success) {
-        RAWProcessOptions options;
-        options.useCameraWhiteBalance = true;
-        options.outputLinear = true;
-
-        result = _processor->process(options, *_imageData);
-    }
-
-    if (result != ErrorCode::Success) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"Sony2Fuji"
-                                        code:(NSInteger)result
-                                    userInfo:@{NSLocalizedDescriptionKey: @"Failed to load RAW file"}];
-        }
-        return NO;
-    }
-
-    return YES;
-}
-
-- (BOOL)applyLUT:(NSString *)lutPath error:(NSError **)error {
-    auto lut = LUTParser::loadLUT(lutPath.UTF8String);
-
-    if (!lut || !lut->isValid()) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"Sony2Fuji"
-                                        code:-1
-                                    userInfo:@{NSLocalizedDescriptionKey: @"Failed to load LUT"}];
-        }
-        return NO;
-    }
-
-    _lut = std::shared_ptr<LUT3D>(std::move(lut));
-
-    // 色彩空间转换
-    ColorConverter converter;
-    converter.convertImage(*_imageData,
-                          _processor->getNativeColorSpace(),
-                          ColorSpace::FujiFilm_FGamut);
-
-    // 应用 LUT
-    LUTApplicator applicator(_lut);
-    ErrorCode result = applicator.applyToImage(*_imageData);
-
-    if (result != ErrorCode::Success) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"Sony2Fuji"
-                                        code:(NSInteger)result
-                                    userInfo:@{NSLocalizedDescriptionKey: @"Failed to apply LUT"}];
-        }
-        return NO;
-    }
-
-    return YES;
-}
-
-- (BOOL)saveImage:(NSString *)outputPath
-          quality:(NSInteger)quality
-            error:(NSError **)error {
-
-    OutputFormat format = OutputFormat::JPEG;
-    if ([outputPath.pathExtension.lowercaseString isEqualToString:@"png"]) {
-        format = OutputFormat::PNG;
-    }
-
-    ErrorCode result = ImageEncoder::saveImage(*_imageData,
-                                               outputPath.UTF8String,
-                                               format,
-                                               (int)quality);
-
-    if (result != ErrorCode::Success) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"Sony2Fuji"
-                                        code:(NSInteger)result
-                                    userInfo:@{NSLocalizedDescriptionKey: @"Failed to save image"}];
-        }
-        return NO;
-    }
-
-    return YES;
-}
-
-- (NSInteger)width {
-    return _processor->getWidth();
-}
-
-- (NSInteger)height {
-    return _processor->getHeight();
-}
-
-- (NSString *)cameraMake {
-    return @(_processor->getCameraMake().c_str());
-}
-
-- (NSString *)cameraModel {
-    return @(_processor->getCameraModel().c_str());
-}
-
-@end
-```
-
-### 3.2 创建 Swift 接口
-
-**Sony2FujiSwift.swift**
-```swift
-import Foundation
-import UIKit
-
-public class Sony2Fuji {
-    private let processor: Sony2FujiProcessor
-
-    public init() {
-        processor = Sony2FujiProcessor()
-    }
-
-    public func processImage(rawPath: String,
-                            lutPath: String,
-                            outputPath: String,
-                            quality: Int = 95) throws {
-        // 加载 RAW 文件
-        try processor.loadRAWFile(rawPath)
-
-        print("Loaded RAW: \(processor.cameraMake) \(processor.cameraModel)")
-        print("Size: \(processor.width) x \(processor.height)")
-
-        // 应用 LUT
-        try processor.applyLUT(lutPath)
-
-        // 保存结果
-        try processor.saveImage(outputPath, quality: quality)
-    }
-
-    public func processImageAsync(rawPath: String,
-                                  lutPath: String,
-                                  outputPath: String,
-                                  quality: Int = 95,
-                                  progress: @escaping (String) -> Void,
-                                  completion: @escaping (Result<String, Error>) -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-
-            do {
-                progress("加载 RAW 文件...")
-                try self.processor.loadRAWFile(rawPath)
-
-                progress("应用 LUT...")
-                try self.processor.applyLUT(lutPath)
-
-                progress("保存结果...")
-                try self.processor.saveImage(outputPath, quality: quality)
-
-                DispatchQueue.main.async {
-                    completion(.success(outputPath))
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    completion(.failure(error))
-                }
-            }
-        }
-    }
+    status = sony2fuji_process(session, &request, NULL);
+    sony2fuji_session_destroy(session);
+    return status;
 }
 ```
 
-## 4. 使用示例
+交互编辑应复用 session，而不是每个滑杆事件都创建一个。所有同一 session 的调用串行执行；释放输出缓冲用 `sony2fuji_release_buffer`，结束会话用 `sony2fuji_session_destroy`。失败时读取 `sony2fuji_status_message`。
 
-### 4.1 基本使用
+For editing, reuse a session rather than recreating it for every slider event. Serialize all calls on that session. Release output buffers with `sony2fuji_release_buffer` and sessions with `sony2fuji_session_destroy`; inspect `sony2fuji_status_message` on failure.
 
-```swift
-import UIKit
+`SONY2FUJI_WB_CAMERA` 配合 6500 K/0 tint 表示不附加相对 RGB 偏移，不表示相机拍摄色温固定为 6500 K。绝对 RAW Kelvin 使用 `SONY2FUJI_WB_TEMPERATURE`，拍摄值通过 getter 获取。
 
-class ViewController: UIViewController {
-    func processImage() {
-        let sony2fuji = Sony2Fuji()
+With `SONY2FUJI_WB_CAMERA`, 6500 K/0 tint adds no relative RGB shift; it does not assert that the camera shot at 6500 K. Use `SONY2FUJI_WB_TEMPERATURE` for absolute RAW Kelvin and the getter for estimated as-shot values.
 
-        let rawPath = Bundle.main.path(forResource: "DSC00001", ofType: "ARW")!
-        let lutPath = Bundle.main.path(forResource: "ETERNA_BT709", ofType: "cube")!
-        let outputPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("output.jpg")
-            .path
+## 4. Metal 与预览 / Metal and Previews
 
-        do {
-            try sony2fuji.processImage(
-                rawPath: rawPath,
-                lutPath: lutPath,
-                outputPath: outputPath,
-                quality: 95
-            )
+在已创建的 session 上设置 GPU 模式。Auto 在加速失败时回退 CPU，Force 用于显式验证 GPU，不能作为所有设备都支持的保证。
 
-            // 显示结果
-            if let image = UIImage(contentsOfFile: outputPath) {
-                imageView.image = image
-            }
-        } catch {
-            print("Error: \(error)")
-        }
-    }
-}
+Set GPU mode on an existing session. Auto falls back to CPU if acceleration fails; Force is for explicit GPU validation, not a guarantee that every device supports it.
+
+```c
+sony2fuji_gpu_config config = {0};
+config.version = SONY2FUJI_GPU_CONFIG_VERSION;
+config.struct_size = sizeof(config);
+config.mode = SONY2FUJI_GPU_AUTO;
+sony2fuji_session_set_gpu_config(session, &config);
 ```
 
-### 4.2 异步处理
+预览使用 `SONY2FUJI_INTENT_PREVIEW` 和 `preview_long_edge`；需要输出像素时选择 BUFFER 并传入缓冲结构。缩小预览和交互 half-size 不能替代完整导出；请保留精确渲染与导出的质量隔离。
 
-```swift
-func processImageWithProgress() {
-    let sony2fuji = Sony2Fuji()
+Use `SONY2FUJI_INTENT_PREVIEW` and `preview_long_edge` for previews. Select BUFFER and supply a buffer struct when requesting pixels. Reduced previews and interactive half-size processing must not replace full-quality exports.
 
-    sony2fuji.processImageAsync(
-        rawPath: rawPath,
-        lutPath: lutPath,
-        outputPath: outputPath,
-        progress: { status in
-            DispatchQueue.main.async {
-                self.progressLabel.text = status
-            }
-        },
-        completion: { result in
-            switch result {
-            case .success(let path):
-                print("Success: \(path)")
-                if let image = UIImage(contentsOfFile: path) {
-                    self.imageView.image = image
-                }
-            case .failure(let error):
-                print("Error: \(error)")
-            }
-        }
-    )
-}
-```
+## 5. Swift、资源与性能 / Swift, Resources and Performance
 
-## 5. 性能优化
+- 使用轻量 Swift/Objective-C 封装调用 C API，在后台串行队列处理图像，在主线程更新 UI。
+  Call the C API from a thin Swift/Objective-C wrapper, process images on a serial background queue, and update UI on the main thread.
+- 将选择的 CUBE 加入应用资源，传入实际资源路径。例如仓库的 `FLog2_to_ETERNA_65grid_V.1.00.cube`；不能假定 `ETERNA_BT709.cube` 已存在。
+  Add the selected CUBE to app resources and pass its real path, such as the repository's `FLog2_to_ETERNA_65grid_V.1.00.cube`; do not assume `ETERNA_BT709.cube` exists.
+- 大图会同时占用 RAW、浮点图像、GPU 和显示缓冲内存。限制在途任务、复用当前会话，并及时释放缓冲。
+  Large images consume RAW, floating-point, GPU and display buffers. Limit in-flight work, reuse the current session and release buffers promptly.
+- 当前应用侧适配可参考 [iOS 处理封装](../../../RawLab/RawLab/Core/RawProcessing/Sony2FujiProcessor.swift)；不要把 AppKit 代码直接搬到 iOS。
+  See the [iOS processing adapter](../../../RawLab/RawLab/Core/RawProcessing/Sony2FujiProcessor.swift); do not copy AppKit-specific code into iOS.
 
-### 5.1 后台处理
+## 6. 排错与参考 / Troubleshooting and References
 
-建议在后台线程处理图像:
+| 问题 / Symptom | 检查 / Check |
+| --- | --- |
+| Framework 加载失败 / Framework fails to load | Embed & Sign、SDK、架构、动态依赖路径 / Embedding, signing, SDK, architecture and dependency paths |
+| 找不到符号 / Missing symbols | C++、LibRaw 及其依赖是否链接到正确目标 / Correct linkage of C++, LibRaw and its dependencies |
+| 输出尺寸无效 / Invalid output size | NATIVE 或正数 EXACT 尺寸 / NATIVE or positive EXACT dimensions |
+| 内存或延迟过高 / Excessive memory or latency | 有界预览、串行队列、释放缓冲 / Bounded previews, serial work and buffer release |
 
-```swift
-DispatchQueue.global(qos: .userInitiated).async {
-    // 处理图像
-    DispatchQueue.main.async {
-        // 更新 UI
-    }
-}
-```
+[公共头文件](../../include/sony2fuji/ffi/sony2fuji_c.h)是当前接口依据；[C API 说明](../../docs/ios-api.md)中的历史示例应与头文件和本页核对。[色彩约定](../../docs/color-contract.md)定义 LUT 输入及白平衡行为。
 
-### 5.2 内存管理
+The [public header](../../include/sony2fuji/ffi/sony2fuji_c.h) is the current interface reference. Cross-check historical examples in the [C API notes](../../docs/ios-api.md) against the header and this page. The [color contract](../../docs/color-contract.md) defines LUT input and white-balance behavior.
 
-处理大型 RAW 文件时注意内存管理:
+构建和设备兼容性需要在你的 Xcode、iOS SDK 和目标设备上验证；本次文档更新未执行 iOS 构建。
 
-```swift
-autoreleasepool {
-    try sony2fuji.processImage(...)
-}
-```
-
-## 6. 常见问题
-
-### Q: Framework 加载失败
-A: 确保在 Build Settings 中设置正确的 Library Search Paths 和 Header Search Paths
-
-### Q: 符号未找到错误
-A: 确保链接了所有依赖库 (libraw, 等)
-
-### Q: 性能问题
-A: 使用后台队列处理,并考虑降低输出分辨率或质量
-
-## 7. 依赖项
-
-iOS Framework 需要以下依赖:
-- libraw (需要单独构建 iOS 版本)
-- 标准 C++ 库
-
-构建说明见主 README。
+Validate builds and compatibility with your Xcode, iOS SDK and target devices. No iOS build was run for this documentation update.

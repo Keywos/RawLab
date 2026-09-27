@@ -1,541 +1,199 @@
-# Android 集成指南
+# Android 集成指南 / Android Integration
 
-将 Sony2Fuji 核心库集成到 Android 应用程序中。
+通过 NDK/JNI 调用 Sony2Fuji 共享 C API。此目录目前只有集成文档，Kotlin/JNI 代码需要宿主应用提供；不是已经打包发布的 Android SDK。
 
-## 1. 构建 Android 库
+Call the shared Sony2Fuji C API through NDK/JNI. This directory currently contains documentation only; the host app must provide Kotlin/JNI code. It is not a packaged Android SDK.
 
-### 1.1 使用 CMake 和 NDK 构建
+旧文档的静态全局 C++ 封装未完整实现当前 F-Log2 照片管线，且 Activity 销毁不会自动释放全局对象。以下使用共享 API 和显式会话所有权说明集成方式。
 
-创建 `android-build.sh`:
+The former static-global C++ example did not implement the complete current F-Log2 photo pipeline, and destroying an Activity did not release its global objects. The guide below uses the shared API and explicit session ownership instead.
+
+## 1. 构建依赖 / Build Prerequisites
+
+需要 CMake 3.15+、C++17、Android NDK、pkg-config，以及为每个目标 ABI 构建的 LibRaw 和依赖。宿主机 Homebrew/Linux LibRaw 不能代替 Android 库。
+
+Requires CMake 3.15+, C++17, the Android NDK, pkg-config, and LibRaw/dependencies built for each target ABI. Host Homebrew/Linux LibRaw cannot substitute for Android libraries.
+
+示例从仓库根目录运行，路径占位符必须替换为你的 Android 工具链与 arm64 LibRaw 安装路径：
+
+Run from the repository root and replace the placeholders with your Android toolchain and arm64 LibRaw installation:
 
 ```bash
-#!/bin/bash
+export ANDROID_NDK=/path/to/android-ndk
+export ANDROID_LIBRAW_PREFIX=/path/to/android-libraw/arm64-v8a
 
-# 设置 NDK 路径
-export ANDROID_NDK=$HOME/Android/Sdk/ndk/25.2.9519653
-
-# 设置架构
-ANDROID_ABI=arm64-v8a  # 或 armeabi-v7a, x86, x86_64
-
-mkdir -p build-android-$ANDROID_ABI
-cd build-android-$ANDROID_ABI
-
-cmake .. \
-  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-  -DANDROID_ABI=$ANDROID_ABI \
+PKG_CONFIG_LIBDIR="$ANDROID_LIBRAW_PREFIX/lib/pkgconfig" \
+cmake -S lutools -B lutools/build-android-arm64-v8a \
+  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+  -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-24 \
   -DANDROID_STL=c++_shared \
-  -DBUILD_SHARED_LIB=ON \
-  -DBUILD_CLI=OFF
-
-cmake --build . --config Release
-
-cd ..
+  -DBUILD_SHARED_LIB=ON -DBUILD_CLI=OFF \
+  -DSONY2FUJI_ENABLE_OPENMP=OFF
+cmake --build lutools/build-android-arm64-v8a --config Release -j 6
 ```
 
-### 1.2 构建所有架构
+Android API 24 是当前构建脚本的默认值，不代表所有设备或应用配置已验证。为其他 ABI 构建时，同步更换 `ANDROID_ABI`、构建目录和 LibRaw pkg-config 路径。
 
-```bash
-# 构建多个架构
-for ABI in arm64-v8a armeabi-v7a x86 x86_64; do
-    ./android-build.sh $ABI
-done
+Android API 24 is the current script's default, not proof of compatibility with every device or app configuration. For another ABI, change `ANDROID_ABI`, the build directory and the LibRaw pkg-config path together.
+
+[build.sh](../../build.sh) 的 `android` 入口可循环构建 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64`，并复制至 `platform/android/jniLibs/<ABI>`。它从 `lutools/` 运行，依赖 `nproc` 且不会替你编译或选择各 ABI 的 LibRaw；跨平台环境优先使用上面的显式单 ABI 配置。
+
+The `android` entry point in [build.sh](../../build.sh) loops over `arm64-v8a`, `armeabi-v7a`, `x86` and `x86_64`, copying results to `platform/android/jniLibs/<ABI>`. Run it from `lutools/`. It requires `nproc` and does not build or select per-ABI LibRaw for you; the explicit single-ABI command above is preferable when configuring a cross-platform environment.
+
+## 2. Android Studio 集成 / Android Studio Integration
+
+将核心和所有非系统动态依赖放进匹配 ABI 的 `jniLibs`，包括构建选择的 `libc++_shared.so`。只保留应用实际构建和测试过的 ABI。
+
+Place the core and every non-system shared dependency in matching `jniLibs` directories, including `libc++_shared.so` when selected by the build. Include only ABIs the app actually builds and tests.
+
+```text
+app/src/main/
+  java/com/example/rawlab/NativeProcessor.kt
+  cpp/CMakeLists.txt
+  cpp/sony2fuji-jni.cpp
+  jniLibs/arm64-v8a/libsony2fuji.so
+  jniLibs/arm64-v8a/<other-shared-dependencies>
 ```
 
-## 2. Android Studio 集成
+下面是应用侧 JNI 构建示意。将 `SONY2FUJI_INCLUDE_DIR` 指向仓库的 `lutools/include`；通过应用 Gradle 的 `externalNativeBuild.cmake` 引用此文件。
 
-### 2.1 项目结构
-
-```
-app/
-├── src/
-│   ├── main/
-│   │   ├── java/com/yourapp/
-│   │   │   └── Sony2FujiProcessor.kt
-│   │   ├── cpp/
-│   │   │   ├── sony2fuji-jni.cpp
-│   │   │   └── CMakeLists.txt
-│   │   └── jniLibs/
-│   │       ├── arm64-v8a/
-│   │       │   └── libsony2fuji.so
-│   │       ├── armeabi-v7a/
-│   │       │   └── libsony2fuji.so
-│   │       ├── x86/
-│   │       │   └── libsony2fuji.so
-│   │       └── x86_64/
-│   │           └── libsony2fuji.so
-│   └── androidTest/
-└── build.gradle
-```
-
-### 2.2 app/build.gradle
-
-```gradle
-android {
-    compileSdk 34
-
-    defaultConfig {
-        applicationId "com.yourapp.sony2fuji"
-        minSdk 24
-        targetSdk 34
-
-        ndk {
-            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
-        }
-
-        externalNativeBuild {
-            cmake {
-                cppFlags "-std=c++17"
-                arguments "-DANDROID_STL=c++_shared"
-            }
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path "src/main/cpp/CMakeLists.txt"
-            version "3.22.1"
-        }
-    }
-}
-
-dependencies {
-    implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
-}
-```
-
-### 2.3 CMakeLists.txt (JNI)
+This is an app-side JNI build example. Point `SONY2FUJI_INCLUDE_DIR` at the repository's `lutools/include` and reference this file from Gradle's `externalNativeBuild.cmake` configuration.
 
 ```cmake
-cmake_minimum_required(VERSION 3.22.1)
-project(sony2fuji-jni)
-
+cmake_minimum_required(VERSION 3.15)
+project(sony2fuji_jni LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
+set(SONY2FUJI_INCLUDE_DIR "" CACHE PATH "Path to lutools/include")
 
-# 添加预构建的 sony2fuji 库
 add_library(sony2fuji SHARED IMPORTED)
 set_target_properties(sony2fuji PROPERTIES IMPORTED_LOCATION
-    ${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libsony2fuji.so)
-
-# JNI wrapper
-add_library(sony2fuji-jni SHARED
-    sony2fuji-jni.cpp
-)
-
-target_include_directories(sony2fuji-jni PRIVATE
-    ${CMAKE_SOURCE_DIR}/../../../../include
-)
-
-target_link_libraries(sony2fuji-jni
-    sony2fuji
-    android
-    log
-)
+    "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libsony2fuji.so")
+add_library(sony2fuji-jni SHARED sony2fuji-jni.cpp)
+target_include_directories(sony2fuji-jni PRIVATE "${SONY2FUJI_INCLUDE_DIR}")
+target_link_libraries(sony2fuji-jni PRIVATE sony2fuji android log)
 ```
 
-## 3. JNI 封装
+Gradle 的 `abiFilters`、CMake ABI 和打包的库必须一致。请使用宿主项目实际支持的 Android Gradle Plugin、SDK 与依赖版本，而不是把旧示例中的固定版本当成要求。
 
-### 3.1 sony2fuji-jni.cpp
+Gradle `abiFilters`, the CMake ABI and packaged libraries must agree. Use the Android Gradle Plugin, SDK and dependency versions supported by the host project instead of treating old sample version pins as requirements.
 
-```cpp
-#include <jni.h>
-#include <string>
-#include <android/log.h>
-#include "sony2fuji/sony2fuji.h"
+## 3. JNI 与 C API / JNI and the C API
 
-#define LOG_TAG "Sony2Fuji"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+当前接口以[公共头文件](../../include/sony2fuji/ffi/sony2fuji_c.h)为准。JNI 层需要：
 
-using namespace sony2fuji;
+The [public header](../../include/sony2fuji/ffi/sony2fuji_c.h) defines the current interface. The JNI layer should:
 
-// 全局对象 (简化处理,实际应用中应使用更好的生命周期管理)
-static std::unique_ptr<RAWProcessor> g_processor;
-static std::unique_ptr<ImageData> g_imageData;
-static std::shared_ptr<LUT3D> g_lut;
+1. 为每个处理器拥有一个 `sony2fuji_session*`，通过 `jlong` 或等效宿主句柄管理，显式创建和销毁。
+   Own one `sony2fuji_session*` per processor, expose it through a `jlong` or equivalent host handle, and create/destroy it explicitly.
+2. 将 Java 字符串转为 UTF-8 路径，检查获取失败，并在使用后调用 `ReleaseStringUTFChars`。
+   Convert Java strings to UTF-8 paths, check acquisition failures and call `ReleaseStringUTFChars` after use.
+3. 初始化 request 的版本和大小，以及亮度/对比度/饱和度的恒等值 1。完整 RAW 导出使用 `FINAL` + `NATIVE`，不能用零尺寸 `EXACT`。
+   Initialize request version/size and identity brightness/contrast/saturation values of 1. Use `FINAL` + `NATIVE` for full-resolution RAW export, not zero-sized `EXACT`.
+4. 调用 `sony2fuji_process` 并返回状态码；BUFFER 输出在宿主复制或使用后必须通过 `sony2fuji_release_buffer` 释放。
+   Call `sony2fuji_process` and return its status; release BUFFER output with `sony2fuji_release_buffer` after host-side copying or use.
 
-extern "C" {
+完整的[共享 C 调用示例](../ios/README.md)同样适用于 Android 的 native 层；平台差别在 SDK、资源访问、JNI 和 UI，而不是重新实现 LUT 管线。
 
-JNIEXPORT jboolean JNICALL
-Java_com_yourapp_Sony2FujiProcessor_nativeLoadRAW(
-    JNIEnv *env,
-    jobject /* this */,
-    jstring filepath) {
+The complete [shared C call example](../ios/README.md) also applies to Android's native layer. Platform differences concern the SDK, resources, JNI and UI, not a separate LUT pipeline.
 
-    const char *path = env->GetStringUTFChars(filepath, nullptr);
+以下 Kotlin 类仅定义宿主侧接口；需要在 `sony2fuji-jni.cpp` 中实现所声明的 native 方法，并保持包名和 JNI 符号一致：
 
-    g_processor = std::make_unique<RAWProcessor>();
-    g_imageData = std::make_unique<ImageData>();
+This Kotlin class defines an illustrative host interface only. Implement its native methods in `sony2fuji-jni.cpp` and keep package names and JNI symbols consistent:
 
-    ErrorCode result = g_processor->loadFile(path);
-    env->ReleaseStringUTFChars(filepath, path);
+```kotlin
+package com.example.rawlab
 
-    if (result != ErrorCode::Success) {
-        LOGE("Failed to load RAW file");
-        return JNI_FALSE;
+class NativeProcessor : AutoCloseable {
+    private var handle = nativeCreate()
+
+    init { check(handle != 0L) { "Cannot create RAW session" } }
+
+    fun render(input: String, lut: String, output: String): Int {
+        check(handle != 0L) { "Processor is closed" }
+        return nativeRender(handle, input, lut, output)
     }
 
-    RAWProcessOptions options;
-    options.useCameraWhiteBalance = true;
-    options.outputLinear = true;
-
-    result = g_processor->process(options, *g_imageData);
-
-    if (result != ErrorCode::Success) {
-        LOGE("Failed to process RAW file");
-        return JNI_FALSE;
+    override fun close() {
+        if (handle != 0L) {
+            nativeDestroy(handle)
+            handle = 0
+        }
     }
 
-    LOGI("RAW loaded: %dx%d", g_imageData->width, g_imageData->height);
-    return JNI_TRUE;
-}
+    private external fun nativeCreate(): Long
+    private external fun nativeRender(handle: Long, input: String, lut: String, output: String): Int
+    private external fun nativeDestroy(handle: Long)
 
-JNIEXPORT jboolean JNICALL
-Java_com_yourapp_Sony2FujiProcessor_nativeApplyLUT(
-    JNIEnv *env,
-    jobject /* this */,
-    jstring lutPath) {
-
-    const char *path = env->GetStringUTFChars(lutPath, nullptr);
-
-    auto lut = LUTParser::loadLUT(path);
-    env->ReleaseStringUTFChars(lutPath, path);
-
-    if (!lut || !lut->isValid()) {
-        LOGE("Failed to load LUT");
-        return JNI_FALSE;
+    companion object {
+        init { System.loadLibrary("sony2fuji-jni") }
     }
-
-    g_lut = std::shared_ptr<LUT3D>(std::move(lut));
-
-    // 色彩空间转换
-    ColorConverter converter;
-    converter.convertImage(*g_imageData,
-                          g_processor->getNativeColorSpace(),
-                          ColorSpace::FujiFilm_FGamut);
-
-    // 应用 LUT
-    LUTApplicator applicator(g_lut);
-    ErrorCode result = applicator.applyToImage(*g_imageData);
-
-    if (result != ErrorCode::Success) {
-        LOGE("Failed to apply LUT");
-        return JNI_FALSE;
-    }
-
-    LOGI("LUT applied successfully");
-    return JNI_TRUE;
 }
-
-JNIEXPORT jboolean JNICALL
-Java_com_yourapp_Sony2FujiProcessor_nativeSaveImage(
-    JNIEnv *env,
-    jobject /* this */,
-    jstring outputPath,
-    jint quality) {
-
-    const char *path = env->GetStringUTFChars(outputPath, nullptr);
-    std::string pathStr(path);
-    env->ReleaseStringUTFChars(outputPath, path);
-
-    OutputFormat format = OutputFormat::JPEG;
-    if (pathStr.find(".png") != std::string::npos) {
-        format = OutputFormat::PNG;
-    }
-
-    ErrorCode result = ImageEncoder::saveImage(*g_imageData,
-                                               pathStr,
-                                               format,
-                                               quality);
-
-    if (result != ErrorCode::Success) {
-        LOGE("Failed to save image");
-        return JNI_FALSE;
-    }
-
-    LOGI("Image saved: %s", pathStr.c_str());
-    return JNI_TRUE;
-}
-
-JNIEXPORT jint JNICALL
-Java_com_yourapp_Sony2FujiProcessor_nativeGetWidth(
-    JNIEnv * /* env */,
-    jobject /* this */) {
-    return g_processor ? g_processor->getWidth() : 0;
-}
-
-JNIEXPORT jint JNICALL
-Java_com_yourapp_Sony2FujiProcessor_nativeGetHeight(
-    JNIEnv * /* env */,
-    jobject /* this */) {
-    return g_processor ? g_processor->getHeight() : 0;
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_yourapp_Sony2FujiProcessor_nativeGetCameraMake(
-    JNIEnv *env,
-    jobject /* this */) {
-    if (!g_processor) return env->NewStringUTF("");
-    return env->NewStringUTF(g_processor->getCameraMake().c_str());
-}
-
-JNIEXPORT jstring JNICALL
-Java_com_yourapp_Sony2FujiProcessor_nativeGetCameraModel(
-    JNIEnv *env,
-    jobject /* this */) {
-    if (!g_processor) return env->NewStringUTF("");
-    return env->NewStringUTF(g_processor->getCameraModel().c_str());
-}
-
-} // extern "C"
 ```
 
-## GPU 加速 (OpenGL ES 3.1)
+同一实例的 render、配置和 close 必须串行调用；不要把单一静态全局处理器同时交给多个 Activity 或任务。
 
-C++/C API 会在 GLES 3.1 不可用时自动回退到 CPU。
+Serialize render, configuration and close calls on the same instance. Do not share one static global processor concurrently across Activities or tasks.
 
-C API:
+## 4. GPU 与生命周期 / GPU and Lifecycle
+
+Android LUT 后端需要 OpenGL ES 3.1。Auto 在不可用时回退 CPU；Force 会报告处理失败。不要把 Apple Metal 的整条照片管线加速能力当成 Android 已具备的功能。
+
+The Android LUT backend requires OpenGL ES 3.1. Auto falls back to CPU when unavailable; Force reports processing failure. Do not assume Android has the entire photo-pipeline acceleration provided by Apple Metal.
+
+在已创建 session 上设置：
+
+Configure an existing session:
 
 ```c
-sony2fuji_gpu_config gpu_config = {
-    .version = SONY2FUJI_GPU_CONFIG_VERSION,
-    .struct_size = sizeof(sony2fuji_gpu_config),
-    .mode = SONY2FUJI_GPU_AUTO
-};
-sony2fuji_session_set_gpu_config(session, &gpu_config);
+sony2fuji_gpu_config config = {0};
+config.version = SONY2FUJI_GPU_CONFIG_VERSION;
+config.struct_size = sizeof(config);
+config.mode = SONY2FUJI_GPU_AUTO;
+sony2fuji_session_set_gpu_config(session, &config);
 ```
 
-C++:
+单次导出可以在后台执行并使用 `use` 释放会话；交互编辑应由生命周期明确的所有者复用会话和串行队列。下面的 `processor.render` 是上面的示意接口，不是随仓库提供的 Kotlin API。
 
-```cpp
-sony2fuji::GpuConfig config;
-config.mode = sony2fuji::GpuMode::Auto;
-sony2fuji::applyLUTWithConfig(lut, *imageData, config);
-```
-
-### 3.2 Kotlin 封装
-
-**Sony2FujiProcessor.kt**
+For a one-off export, run in the background and use `use` to close the session. An editor should reuse its session under a lifecycle-aware owner and serial queue. The `render` method below belongs to the illustrative interface above, not a Kotlin API shipped by this repository.
 
 ```kotlin
-package com.yourapp
-
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.File
-
-class Sony2FujiProcessor {
-
-    init {
-        System.loadLibrary("sony2fuji-jni")
-    }
-
-    // Native 方法声明
-    private external fun nativeLoadRAW(filepath: String): Boolean
-    private external fun nativeApplyLUT(lutPath: String): Boolean
-    private external fun nativeSaveImage(outputPath: String, quality: Int): Boolean
-    private external fun nativeGetWidth(): Int
-    private external fun nativeGetHeight(): Int
-    private external fun nativeGetCameraMake(): String
-    private external fun nativeGetCameraModel(): String
-
-    val width: Int get() = nativeGetWidth()
-    val height: Int get() = nativeGetHeight()
-    val cameraMake: String get() = nativeGetCameraMake()
-    val cameraModel: String get() = nativeGetCameraModel()
-
-    /**
-     * 处理图像 (同步)
-     */
-    fun processImage(
-        rawPath: String,
-        lutPath: String,
-        outputPath: String,
-        quality: Int = 95
-    ): Boolean {
-        if (!nativeLoadRAW(rawPath)) {
-            return false
-        }
-
-        if (!nativeApplyLUT(lutPath)) {
-            return false
-        }
-
-        return nativeSaveImage(outputPath, quality)
-    }
-
-    /**
-     * 处理图像 (异步)
-     */
-    suspend fun processImageAsync(
-        rawPath: String,
-        lutPath: String,
-        outputPath: String,
-        quality: Int = 95,
-        onProgress: (String) -> Unit = {}
-    ): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            onProgress("加载 RAW 文件...")
-            if (!nativeLoadRAW(rawPath)) {
-                return@withContext Result.failure(Exception("Failed to load RAW"))
-            }
-
-            onProgress("应用 LUT...")
-            if (!nativeApplyLUT(lutPath)) {
-                return@withContext Result.failure(Exception("Failed to apply LUT"))
-            }
-
-            onProgress("保存结果...")
-            if (!nativeSaveImage(outputPath, quality)) {
-                return@withContext Result.failure(Exception("Failed to save image"))
-            }
-
-            Result.success(outputPath)
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
+withContext(Dispatchers.Default) {
+    NativeProcessor().use { processor ->
+        val status = processor.render(inputPath, lutPath, outputPath)
+        check(status == 0) { "RAW processing failed: $status" }
     }
 }
 ```
 
-## 4. 使用示例
+## 5. 文件访问与内存 / File Access and Memory
 
-### 4.1 Activity 中使用
+- native 核心接收文件系统路径，不处理 Android `content://` URI 或运行时权限。宿主应用负责取得访问授权，将资源提供为可读路径，并选择可写输出位置。
+  The native core accepts filesystem paths, not Android `content://` URIs or runtime permissions. The host must obtain access, provide readable paths and choose a writable output location.
+- 权限应按目标 Android 版本和文件来源配置；旧文档的 `WRITE_EXTERNAL_STORAGE` / `requestLegacyExternalStorage` 不是通用方案。
+  Configure permissions for the target Android version and file source; the old `WRITE_EXTERNAL_STORAGE` / `requestLegacyExternalStorage` sample is not a universal solution.
+- 预览限制尺寸和在途任务数。完成 native 工作后再关闭会话；Activity 的 `onDestroy` 不会自动释放任意 C++ 全局对象。
+  Bound preview dimensions and in-flight work. Close sessions after native work finishes; an Activity's `onDestroy` does not automatically destroy arbitrary C++ globals.
+- LUT assets 必须由应用复制或解析为核心可读取的文件路径。原始 RAW 和用户选择的输出路径不能相同。
+  The app must make bundled LUT assets available as readable file paths. The output path must differ from the original RAW.
 
-```kotlin
-class MainActivity : AppCompatActivity() {
-    private val processor = Sony2FujiProcessor()
+## 6. 排错与验证 / Troubleshooting and Verification
 
-    private fun processImage() {
-        val rawPath = "/sdcard/DCIM/DSC00001.ARW"
-        val lutPath = "${filesDir}/ETERNA_BT709.cube"
-        val outputPath = "${filesDir}/output.jpg"
-
-        lifecycleScope.launch {
-            processor.processImageAsync(
-                rawPath = rawPath,
-                lutPath = lutPath,
-                outputPath = outputPath,
-                quality = 95
-            ) { progress ->
-                // 更新进度
-                runOnUiThread {
-                    progressText.text = progress
-                }
-            }.onSuccess { path ->
-                // 显示结果
-                val bitmap = BitmapFactory.decodeFile(path)
-                imageView.setImageBitmap(bitmap)
-            }.onFailure { error ->
-                Toast.makeText(this@MainActivity,
-                    "Error: ${error.message}",
-                    Toast.LENGTH_LONG).show()
-            }
-        }
-    }
-}
-```
-
-### 4.2 ViewModel 中使用
-
-```kotlin
-class ImageProcessViewModel : ViewModel() {
-    private val processor = Sony2FujiProcessor()
-
-    private val _processState = MutableLiveData<ProcessState>()
-    val processState: LiveData<ProcessState> = _processState
-
-    fun processImage(
-        rawPath: String,
-        lutPath: String,
-        outputPath: String
-    ) {
-        viewModelScope.launch {
-            _processState.value = ProcessState.Loading
-
-            processor.processImageAsync(
-                rawPath = rawPath,
-                lutPath = lutPath,
-                outputPath = outputPath
-            ) { progress ->
-                _processState.postValue(ProcessState.Progress(progress))
-            }.onSuccess { path ->
-                _processState.value = ProcessState.Success(path)
-            }.onFailure { error ->
-                _processState.value = ProcessState.Error(error.message ?: "Unknown error")
-            }
-        }
-    }
-
-    sealed class ProcessState {
-        object Loading : ProcessState()
-        data class Progress(val message: String) : ProcessState()
-        data class Success(val outputPath: String) : ProcessState()
-        data class Error(val message: String) : ProcessState()
-    }
-}
-```
-
-## 5. 权限配置
-
-**AndroidManifest.xml**
-
-```xml
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-
-    <!-- Android 13+ -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-
-    <application
-        android:requestLegacyExternalStorage="true"
-        ...>
-        ...
-    </application>
-</manifest>
-```
-
-## 6. 性能优化
-
-### 6.1 使用 Kotlin Coroutines
-
-```kotlin
-// 在后台线程处理
-withContext(Dispatchers.IO) {
-    processor.processImage(...)
-}
-```
-
-### 6.2 内存管理
-
-```kotlin
-// 及时释放资源
-override fun onDestroy() {
-    super.onDestroy()
-    // C++ 对象会自动释放
-}
-```
-
-## 7. 常见问题
-
-### Q: UnsatisfiedLinkError
-A: 确保所有架构的 .so 文件都正确放置在 jniLibs 目录
-
-### Q: 找不到 libsony2fuji.so
-A: 检查 CMakeLists.txt 中的路径是否正确
-
-### Q: Native crash
-A: 使用 Android Studio 的 native debugger 或查看 logcat
-
-## 8. 调试
-
-使用 logcat 查看日志:
+| 问题 / Symptom | 检查 / Check |
+| --- | --- |
+| `UnsatisfiedLinkError` | JNI 包名/符号、ABI、全部 .so 依赖 / JNI names/symbols, ABI and every shared dependency |
+| 找不到 `libsony2fuji.so` / Missing library | `jniLibs` 和 CMake 导入路径 / `jniLibs` and CMake import paths |
+| native 崩溃 / Native crash | Android Studio native debugger、logcat、会话生命周期 / Native debugger, logcat and session lifetime |
+| 色彩异常 / Unexpected color | [色彩约定 / Color contract](../../docs/color-contract.md)、正确的 LUT 输入和 request 默认值 / Correct LUT input and request defaults |
 
 ```bash
 adb logcat | grep Sony2Fuji
 ```
 
-启用 native debugging:
-- Android Studio: Run → Edit Configurations → Debugger → Debug type → Native
+按你的项目启用 Android Studio native debugging。至少在实际目标设备上验证 RAW 加载、GPU 回退、取消/关闭、内存和导出；本次文档更新未运行 Android 构建或设备测试。
+
+Enable Android Studio native debugging for your project. Validate RAW loading, GPU fallback, cancellation/close behavior, memory and export on actual target devices. No Android build or device tests were run for this documentation update.
+
+更多构建和数值约定见[核心 README](../../README.md)与[平台集成说明](../../docs/platform-integration.md)。
+
+See the [core README](../../README.md) and [platform integration notes](../../docs/platform-integration.md) for build details and numerical contracts.

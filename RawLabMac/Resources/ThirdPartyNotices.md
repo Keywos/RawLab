@@ -31,4 +31,4 @@ rights holders; no ownership of these assets or official affiliation is claimed.
 The film-label artwork and application icon are generated assets, not official
 product artwork. See their generation records in the RawLab source repository.
 
-RawLab source and releases: https://github.com/dancancer/rawtools
+RawLab source and releases: https://github.com/dancancer/RawLab
