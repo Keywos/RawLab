@@ -36,16 +36,20 @@ if(ANDROID)
 endif()
 
 # LibRaw
-pkg_check_modules(LIBRAW REQUIRED libraw)
-find_library(LIBRAW_LIBRARY NAMES raw HINTS ${LIBRAW_LIBRARY_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT LIBRAW_LIBRARY)
-    message(FATAL_ERROR "libraw not found in ${LIBRAW_LIBRARY_DIRS}")
+if(SONY2FUJI_LIBRAW_TARGET AND TARGET ${SONY2FUJI_LIBRAW_TARGET})
+    set(LIBRAW_LIBRARY ${SONY2FUJI_LIBRAW_TARGET})
+else()
+    pkg_check_modules(LIBRAW REQUIRED libraw)
+    find_library(LIBRAW_LIBRARY NAMES raw HINTS ${LIBRAW_LIBRARY_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    if(NOT LIBRAW_LIBRARY)
+        message(FATAL_ERROR "libraw not found in ${LIBRAW_LIBRARY_DIRS}")
+    endif()
 endif()
 
 # 包含目录
 include_directories(
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LIBRAW_INCLUDE_DIRS}
 )
 

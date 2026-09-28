@@ -1,8 +1,8 @@
 # Android 集成指南 / Android Integration
 
-通过 NDK/JNI 调用 Sony2Fuji 共享 C API。此目录目前只有集成文档，Kotlin/JNI 代码需要宿主应用提供；不是已经打包发布的 Android SDK。
+通过 NDK/JNI 调用 Sony2Fuji 共享 C API。可构建的 Kotlin/Compose 客户端位于 [RawLabAndroid](../../../RawLabAndroid/README.md)，包含相册权限、JNI、源代码构建依赖和设备测试。本目录保留第三方宿主集成说明，不是独立发布的 Android SDK。
 
-Call the shared Sony2Fuji C API through NDK/JNI. This directory currently contains documentation only; the host app must provide Kotlin/JNI code. It is not a packaged Android SDK.
+Call the shared Sony2Fuji C API through NDK/JNI. The buildable [RawLabAndroid client](../../../RawLabAndroid/README.md) includes album permissions, JNI, source-built dependencies and device tests. This directory remains a third-party integration guide, not a separately published Android SDK.
 
 旧文档的静态全局 C++ 封装未完整实现当前 F-Log2 照片管线，且 Activity 销毁不会自动释放全局对象。以下使用共享 API 和显式会话所有权说明集成方式。
 

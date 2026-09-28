@@ -6,7 +6,8 @@ The user approved the first-release scope in chat on 2026-09-28: a native
 Kotlin/Jetpack Compose Android client, backed by the existing C++ core, with
 RAW import, built-in films, neutral/result comparison, exposure and white
 balance controls, and full-resolution export. This document records the
-implementation contract for review; no Android implementation exists yet.
+implementation contract approved in chat, including the subsequent approval
+of an in-app album browser plus a document-picker fallback.
 
 Development stays in `codex/android-client`, in the managed worktree created
 from `origin/main` at `9de1885774e2fb09492332b1abfef6025978f4d0`.
@@ -36,6 +37,8 @@ The initial screen is the editor with a native open-file action, not a
 marketing page. Once loaded, the photo occupies the main space. The top app
 bar has open, comparison, and export actions. A continuous bottom adjustment
 surface provides film selection, strength, exposure, and white balance.
+In wide landscape windows, the same controls move beside the canvas so that
+the short viewport does not reduce the photograph to a tiny strip.
 
 Use neutral-gray photo backgrounds, yellow selection accents, native
 Material controls, and the existing film-label bitmap assets. Controls use
@@ -66,8 +69,20 @@ preview. An import failure preserves the previous usable photo.
 
 ## Files and Resources
 
-Use the system document picker for RAW input and document creation for
-JPEG/PNG output. Do not request broad storage access or resolve `content://`
+Provide an in-app MediaStore album grid and a system document-picker fallback.
+Request READ_MEDIA_IMAGES on API 33+, additionally handle
+READ_MEDIA_VISUAL_USER_SELECTED on API 34+, and READ_EXTERNAL_STORAGE with
+maxSdkVersion 32 on older supported devices. Request permission only on an
+album action, not at startup. Recheck access on resume and refresh the grid;
+support partial access/reselection, denial, and permission revocation. The
+document picker remains available without album permission. List RAW media
+only; ordinary JPEG/HEIC editing is not part of this RAW client.
+
+Offer save-to-album via MediaStore on API 29+ and save-to-file on every
+supported version. Older devices use document creation rather than asking
+for legacy write access. Publish MediaStore output only after a successful
+copy, deleting the pending row on failure. Do not request MANAGE_EXTERNAL_STORAGE
+or resolve `content://`
 to guessed filesystem paths. Copy a selected input on an IO worker into an
 app-private working file, using an app-generated filename. Native code only
 receives app-owned filesystem paths. Provider display names are labels, not
@@ -162,8 +177,9 @@ Write focused regressions before implementing their corresponding behavior:
 1. Settings identity/ranges, As Shot reset, and request preview/export mapping.
 2. One-in-flight/latest-pending behavior, obsolete-result rejection, export
    revision consistency, and close-during-render ordering.
-3. Import cancellation/failure, URI-to-private-file copy, output-copy failure,
-   and unchanged original input.
+3. Album permission full/partial/denied states across API levels, reselection,
+   revocation, RAW filtering, import cancellation/failure, URI-to-private-file
+   copy, output-copy failure, pending MediaStore cleanup, and unchanged input.
 4. Real Sony RAW native smoke: neutral and film differ, exposure/WB controls
    affect output, previews remain bounded, JPEG/PNG preserve native dimensions,
    and PNG is 16-bit. Missing input and invalid handles fail safely.
