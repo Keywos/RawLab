@@ -6,6 +6,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -21,6 +24,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.*
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -28,6 +37,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -47,38 +57,42 @@ fun ToolIcon(icon: ImageVector, label: Int, enabled: Boolean = true, onClick: ()
 @Composable
 fun EditorScreen(state: EditorState, onAlbum: () -> Unit, onFile: () -> Unit,
     onEdit: (EditSettings, Boolean) -> Unit, onReset: () -> Unit, onRetry: () -> Unit,
-    onExport: () -> Unit, onMessageDismiss: () -> Unit, onLicenses: () -> Unit) {
+    onExport: () -> Unit, onMessageDismiss: () -> Unit, onLicenses: () -> Unit, onGpuChange: (Boolean) -> Unit) {
     var compare by rememberSaveable { mutableStateOf(false) }
+    var expanded by rememberSaveable { mutableStateOf(true) }
+    var menu by remember { mutableStateOf(false) }
+    var tool by rememberSaveable { mutableIntStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(state.message) {
         state.message?.let { snackbar.showSnackbar(it); onMessageDismiss() }
     }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
-        TopAppBar(title = { Text("RawLab", style = MaterialTheme.typography.titleLarge) }, actions = {
+        TopAppBar(title = {
+            Column {
+                Text("RawLab", style = MaterialTheme.typography.titleMedium)
+                state.photo?.let { Text(it.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) }
+            }
+        }, actions = {
             ToolIcon(Icons.Outlined.PhotoLibrary, R.string.open_album, state.operation == Operation.NONE, onAlbum)
-            ToolIcon(Icons.Outlined.FolderOpen, R.string.open_file, state.operation == Operation.NONE, onFile)
-            TooltipBox(positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                tooltip = { PlainTooltip { Text(stringResource(R.string.compare)) } }, state = rememberTooltipState()) {
-                IconToggleButton(checked = compare, onCheckedChange = { compare = it }, enabled = state.preview != null) {
-                    Icon(Icons.Outlined.Compare, stringResource(R.string.compare))
+            ToolIcon(Icons.Outlined.SaveAlt, R.string.export, state.canExport, onExport)
+            Box {
+                ToolIcon(Icons.Outlined.MoreVert, R.string.more) { menu = true }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.open_file)) }, enabled = state.operation == Operation.NONE,
+                        leadingIcon = { Icon(Icons.Outlined.FolderOpen, null) }, onClick = { menu = false; onFile() })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.gpu_auto)) }, enabled = state.operation == Operation.NONE,
+                        trailingIcon = { Checkbox(state.gpuEnabled, null) }, onClick = { menu = false; onGpuChange(!state.gpuEnabled) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.licenses)) }, onClick = { menu = false; onLicenses() })
                 }
             }
-            ToolIcon(Icons.Outlined.SaveAlt, R.string.export, state.canExport, onExport)
         })
     }) { padding ->
         BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
-            val dockHeight = if (maxHeight < 460.dp) 190.dp else 270.dp
+            val dockHeight = if (expanded) (maxHeight * .33f).coerceIn(200.dp, 280.dp) else 48.dp
             val wide = maxWidth >= 600.dp && maxWidth > maxHeight
             Column(Modifier.fillMaxSize()) {
-                state.photo?.let { Text(it.name, Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium) }
-                if (state.rendering || state.operation == Operation.EXPORT) {
-                    Text(stringResource(when (state.operation) {
-                        Operation.IMPORT -> R.string.importing
-                        Operation.EXPORT -> R.string.exporting
-                        else -> R.string.rendering
-                    }), Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium)
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                Box(Modifier.fillMaxWidth().height(4.dp)) {
+                    if (state.rendering || state.operation == Operation.EXPORT) LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
                 if (wide && state.photo != null) {
                     Row(Modifier.weight(1f)) {
@@ -87,14 +101,16 @@ fun EditorScreen(state: EditorState, onAlbum: () -> Unit, onFile: () -> Unit,
                             RenderError(state, onRetry)
                         }
                         VerticalDivider()
-                        AdjustmentDock(state, Modifier.width(280.dp).fillMaxHeight(), onEdit, onReset)
+                        AdjustmentDock(state, Modifier.width(320.dp).fillMaxHeight(), tool, { tool = it }, expanded,
+                            { expanded = !expanded }, compare, { compare = !compare }, onEdit, onReset)
                     }
                 } else {
                     EditorCanvas(state, compare, Modifier.weight(1f), onAlbum, onFile, onLicenses)
                     RenderError(state, onRetry)
                     if (state.photo != null) {
                         HorizontalDivider()
-                        AdjustmentDock(state, Modifier.fillMaxWidth().height(dockHeight), onEdit, onReset)
+                        AdjustmentDock(state, Modifier.fillMaxWidth().height(dockHeight), tool, { tool = it }, expanded,
+                            { expanded = !expanded }, compare, { compare = !compare }, onEdit, onReset)
                     }
                 }
             }
@@ -106,8 +122,20 @@ fun EditorScreen(state: EditorState, onAlbum: () -> Unit, onFile: () -> Unit,
 private fun EditorCanvas(state: EditorState, compare: Boolean, modifier: Modifier,
     onAlbum: () -> Unit, onFile: () -> Unit, onLicenses: () -> Unit) {
     Box(modifier.fillMaxWidth().background(Color(0xFF18191A)), contentAlignment = Alignment.Center) {
-        state.preview?.let { PhotoCanvas(it, compare) }
+        state.preview?.let { PhotoCanvas(it, compare, state.photo?.name.orEmpty()) }
             ?: if (!state.rendering) EmptyEditor(onAlbum, onFile, onLicenses) else Unit
+        val status = when {
+            state.operation == Operation.EXPORT -> stringResource(R.string.exporting)
+            state.operation == Operation.IMPORT -> stringResource(R.string.importing)
+            state.rendering -> stringResource(R.string.rendering)
+            state.preview != null -> {
+                val backend = if (state.preview.backend == 2) "GPU" else if (state.gpuEnabled) stringResource(R.string.gpu_fallback) else "CPU"
+                "$backend · ${state.preview.elapsedMs} ms"
+            }
+            else -> null
+        }
+        status?.let { Text(it, Modifier.align(Alignment.TopStart).padding(12.dp).background(Color.Black.copy(alpha = .6f)).padding(6.dp),
+            color = Color.White, style = MaterialTheme.typography.labelSmall) }
     }
 }
 
@@ -137,57 +165,77 @@ private fun EmptyEditor(onAlbum: () -> Unit, onFile: () -> Unit, onLicenses: () 
 }
 
 @Composable
-private fun PhotoCanvas(pair: PreviewPair, compare: Boolean) {
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        if (!compare) PhotoPane(pair.result, null, Modifier.fillMaxSize())
-        else if (maxWidth > maxHeight) Row(Modifier.fillMaxSize()) {
-            PhotoPane(pair.neutral, stringResource(R.string.neutral), Modifier.weight(1f).fillMaxHeight())
-            PhotoPane(pair.result, stringResource(R.string.result), Modifier.weight(1f).fillMaxHeight())
-        } else Column(Modifier.fillMaxSize()) {
-            PhotoPane(pair.neutral, stringResource(R.string.neutral), Modifier.weight(1f).fillMaxWidth())
-            PhotoPane(pair.result, stringResource(R.string.result), Modifier.weight(1f).fillMaxWidth())
+private fun PhotoCanvas(pair: PreviewPair, compare: Boolean, filename: String) {
+    var split by rememberSaveable { mutableFloatStateOf(.5f) }
+    val description = stringResource(R.string.comparison_wipe)
+    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+        Image(pair.result.asImageBitmap(), filename, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+        if (compare) {
+            val wipe = Modifier.fillMaxSize().testTag("comparison-wipe").semantics {
+                contentDescription = description
+                stateDescription = "${(split * 100).roundToInt()}%"
+                progressBarRangeInfo = ProgressBarRangeInfo(split, 0f..1f)
+                setProgress { split = it.coerceIn(0f, 1f); true }
+            }.pointerInput(Unit) {
+                detectDragGestures(onDragStart = { split = (it.x / size.width).coerceIn(0f, 1f) }) { change, _ ->
+                    split = (change.position.x / size.width).coerceIn(0f, 1f)
+                    change.consume()
+                }
+            }.drawWithContent {
+                clipRect(right = size.width * split) { this@drawWithContent.drawContent() }
+                drawLine(Color.White, Offset(size.width * split, 0f), Offset(size.width * split, size.height), 1.dp.toPx())
+            }
+            Image(pair.neutral.asImageBitmap(), null, wipe, contentScale = ContentScale.Fit)
+            Icon(Icons.Outlined.SwapHoriz, null, Modifier.align(Alignment.CenterStart)
+                .offset { IntOffset((maxWidth.toPx() * split - 16.dp.toPx()).roundToInt(), 0) }
+                .size(32.dp).background(Color.White, CircleShape).padding(5.dp), tint = Color.Black)
+            Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                for (label in listOf(R.string.neutral, R.string.result)) Text(stringResource(label),
+                    Modifier.background(Color.Black.copy(alpha = .65f)).padding(6.dp), color = Color.White, style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }
 
 @Composable
-private fun PhotoPane(bitmap: Bitmap, label: String?, modifier: Modifier) {
-    Box(modifier.padding(4.dp)) {
-        Image(bitmap.asImageBitmap(), label, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-        label?.let { Text(it, Modifier.align(Alignment.BottomStart).background(Color.Black.copy(alpha = .65f)).padding(6.dp),
-            color = Color.White, style = MaterialTheme.typography.labelSmall) }
-    }
-}
-
-@Composable
-private fun AdjustmentDock(state: EditorState, modifier: Modifier, onEdit: (EditSettings, Boolean) -> Unit, onReset: () -> Unit) {
-    var tool by rememberSaveable { mutableIntStateOf(0) }
-    val titles = listOf(R.string.film, R.string.strength, R.string.exposure, R.string.white_balance)
+private fun AdjustmentDock(state: EditorState, modifier: Modifier, tool: Int, selectTool: (Int) -> Unit,
+    expanded: Boolean, toggleExpanded: () -> Unit, compare: Boolean, toggleCompare: () -> Unit,
+    onEdit: (EditSettings, Boolean) -> Unit, onReset: () -> Unit) {
+    val titles = listOf(R.string.film, R.string.strength, R.string.exposure, R.string.temperature, R.string.tint)
+    val icons = listOf(Icons.Outlined.PhotoFilter, Icons.Outlined.Tune, Icons.Outlined.Exposure, Icons.Outlined.Thermostat, Icons.Outlined.Palette)
     val edits = state.edits
-    Column(modifier.verticalScroll(rememberScrollState())) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            LazyRow(Modifier.weight(1f)) {
-                items(titles.size) { index ->
-                    Tab(selected = tool == index, onClick = { tool = index }, enabled = state.controlsEnabled,
-                        modifier = Modifier.widthIn(min = 76.dp), text = {
-                            Text(stringResource(titles[index]), color = if (tool == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                        })
-                }
+    val calibrated = state.preview?.temperature?.isFinite() == true
+    Column(modifier) {
+        Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconToggleButton(checked = compare, onCheckedChange = { toggleCompare() }, enabled = state.preview != null) {
+                Icon(Icons.Outlined.Compare, stringResource(R.string.compare))
+            }
+            if (expanded && tool >= 3) {
+                TextButton(onClick = { onEdit(edits.copy(customWb = false), false) }, enabled = state.controlsEnabled && calibrated,
+                    modifier = Modifier.weight(1f)) { Text(stringResource(R.string.as_shot), maxLines = 1) }
+            } else {
+                Text(Film.all.first { it.id == edits.film }.name, Modifier.weight(1f),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
             }
             ToolIcon(Icons.Outlined.RestartAlt, R.string.reset, state.controlsEnabled, onReset)
+            ToolIcon(if (expanded) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
+                if (expanded) R.string.collapse_adjustments else R.string.expand_adjustments, onClick = toggleExpanded)
         }
+        if (!expanded) return@Column
+        Box(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())) {
         when (tool) {
-            0 -> LazyRow(contentPadding = PaddingValues(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            0 -> LazyRow(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(Film.all, key = { it.id }) { film ->
                     val artwork = if (film.file != null) assetBitmap("artwork/${film.id}.png") else null
-                    Column(Modifier.width(80.dp).clickable(enabled = state.controlsEnabled) { onEdit(edits.copy(film = film.id), false) },
+                    Column(Modifier.width(76.dp).selectable(selected = edits.film == film.id, enabled = state.controlsEnabled,
+                        role = Role.RadioButton, onClick = { onEdit(edits.copy(film = film.id), false) }),
                         horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.size(72.dp).border(if (edits.film == film.id) 2.dp else 0.dp,
+                        Box(Modifier.size(64.dp).border(if (edits.film == film.id) 2.dp else 0.dp,
                             if (edits.film == film.id) MaterialTheme.colorScheme.primary else Color.Transparent).padding(3.dp), contentAlignment = Alignment.Center) {
-                            if (artwork != null) Image(artwork.asImageBitmap(), film.name, Modifier.fillMaxSize())
-                            else Icon(Icons.Outlined.Image, film.name, Modifier.size(32.dp))
+                            if (artwork != null) Image(artwork.asImageBitmap(), null, Modifier.fillMaxSize())
+                            else Icon(Icons.Outlined.Image, null, Modifier.size(32.dp))
                         }
-                        Text(film.name, Modifier.heightIn(min = 46.dp).padding(top = 4.dp), maxLines = 3, style = MaterialTheme.typography.labelSmall)
+                        Text(film.name, Modifier.heightIn(min = 42.dp).padding(top = 4.dp), maxLines = 3, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -195,22 +243,27 @@ private fun AdjustmentDock(state: EditorState, modifier: Modifier, onEdit: (Edit
                 { value, dragging -> onEdit(edits.copy(strength = value / 100), dragging) }, { onEdit(edits.copy(strength = 1f), false) })
             2 -> NumericControl(R.string.exposure, edits.exposure, -5f..5f, "EV", state.controlsEnabled,
                 { value, dragging -> onEdit(edits.copy(exposure = value), dragging) }, { onEdit(edits.copy(exposure = 0f), false) })
-            3 -> {
-                val calibrated = state.preview?.temperature?.isFinite() == true
-                Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = !edits.customWb, onClick = { onEdit(edits.copy(customWb = false), false) },
-                        enabled = state.controlsEnabled, label = { Text(stringResource(R.string.as_shot)) })
-                    FilterChip(selected = edits.customWb, onClick = { onEdit(edits.copy(customWb = true), false) },
-                        enabled = state.controlsEnabled && calibrated, label = { Text(stringResource(R.string.custom_wb)) })
-                }
+            3, 4 -> {
                 if (!calibrated) Text(stringResource(R.string.wb_unavailable), Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
                 else {
-                    NumericControl(R.string.temperature, edits.temperature, 2000f..50000f, "K", state.controlsEnabled,
+                    if (tool == 3) NumericControl(R.string.temperature, edits.temperature, 2000f..50000f, "K", state.controlsEnabled,
                         { value, dragging -> onEdit(edits.copy(customWb = true, temperature = value), dragging) },
                         { onEdit(edits.copy(customWb = false), false) }, reciprocal = true)
-                    NumericControl(R.string.tint, edits.tint, -150f..150f, "", state.controlsEnabled,
+                    else NumericControl(R.string.tint, edits.tint, -150f..150f, "", state.controlsEnabled,
                         { value, dragging -> onEdit(edits.copy(customWb = true, tint = value), dragging) },
                         { onEdit(edits.copy(customWb = false), false) })
+                }
+            }
+        }
+        }
+        Row(Modifier.fillMaxWidth().height(64.dp)) {
+            titles.forEachIndexed { index, title ->
+                val color = if (tool == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                Column(Modifier.weight(1f).fillMaxHeight().selectable(tool == index, enabled = state.controlsEnabled, role = Role.Tab,
+                    onClick = { selectTool(index) }), horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center) {
+                    Icon(icons[index], null, Modifier.size(24.dp), tint = color)
+                    Text(stringResource(title), color = color, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                 }
             }
         }
@@ -231,14 +284,15 @@ private fun NumericControl(label: Int, value: Float, range: ClosedFloatingPointR
             ToolIcon(Icons.Outlined.RestartAlt, R.string.reset_value, enabled, onReset)
         }
         val sliderRange = if (reciprocal) (-1f / range.start)..(-1f / range.endInclusive) else range
-        Slider(value = if (reciprocal) -1f / value else value, onValueChange = {
+        Slider(modifier = Modifier.testTag("adjustment-slider").semantics { stateDescription = "$formatted $unit" },
+            value = if (reciprocal) -1f / value else value, onValueChange = {
             onValue(if (reciprocal) (-1f / it).coerceIn(range) else it, true)
         }, onValueChangeFinished = { onValue(value, false) }, valueRange = sliderRange, enabled = enabled)
     }
     if (editing) AlertDialog(onDismissRequest = { editing = false }, title = { Text(stringResource(label)) },
         text = {
             OutlinedTextField(value = input, onValueChange = { input = it }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), isError = parsed == null,
+                keyboardOptions = KeyboardOptions(keyboardType = if (range.start < 0) KeyboardType.Text else KeyboardType.Decimal), isError = parsed == null,
                 label = { Text("${range.start} … ${range.endInclusive} $unit") },
                 supportingText = { if (parsed == null) Text(stringResource(R.string.invalid_value)) })
         }, confirmButton = { TextButton(onClick = { parsed?.let { onValue(it, false) }; editing = false }, enabled = parsed != null) { Text(stringResource(R.string.confirm)) } },

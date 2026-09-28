@@ -10,7 +10,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 enum class Operation { NONE, IMPORT, PICK_EXPORT, EXPORT }
-data class PreviewPair(val neutral: Bitmap, val result: Bitmap, val temperature: Float, val tint: Float)
+data class PreviewPair(val neutral: Bitmap, val result: Bitmap, val temperature: Float, val tint: Float,
+    val backend: Int = 0, val elapsedMs: Long = 0)
 data class EditorState(
     val photo: ImportedPhoto? = null,
     val edits: EditSettings = EditSettings(),
@@ -20,15 +21,17 @@ data class EditorState(
     val exact: Boolean = false,
     val error: String? = null,
     val message: String? = null,
+    val gpuEnabled: Boolean = true,
 ) {
     val canExport get() = photo != null && preview != null && exact && !rendering && operation == Operation.NONE
     val controlsEnabled get() = photo != null && operation == Operation.NONE
 }
 
 private sealed interface Work {
-    data class Import(val uri: Uri) : Work
-    data class Preview(val photo: ImportedPhoto, val edits: EditSettings, val interactive: Boolean, val importing: Boolean = false) : Work
-    data class Export(val photo: ImportedPhoto, val edits: EditSettings, val destination: Uri?, val png: Boolean) : Work
+    data class Import(val uri: Uri, val gpuMode: Int) : Work
+    data class Preview(val photo: ImportedPhoto, val edits: EditSettings, val interactive: Boolean,
+        val gpuMode: Int, val importing: Boolean = false) : Work
+    data class Export(val photo: ImportedPhoto, val edits: EditSettings, val destination: Uri?, val png: Boolean, val gpuMode: Int) : Work
 }
 private sealed interface WorkResult {
     data class Preview(val request: Work.Preview, val pair: PreviewPair) : WorkResult
@@ -53,23 +56,27 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     private fun perform(work: Work): WorkResult = when (work) {
         is Work.Import -> {
             val photo = storage.import(work.uri)
-            try { perform(Work.Preview(photo, EditSettings(), false, importing = true)) }
+            try { perform(Work.Preview(photo, EditSettings(), false, work.gpuMode, importing = true)) }
             catch (error: Throwable) { photo.file.delete(); throw error }
         }
         is Work.Preview -> {
+            val started = System.nanoTime()
             val edge = if (work.interactive) 1000 else 1600
             val native = engine()
+            native.setGpuMode(work.gpuMode)
             val neutral = native.preview(work.photo.file, null, work.edits, edge, work.interactive)
             val lut = storage.filmPath(work.edits.film)
             val film = if (lut == null || work.edits.strength == 0f) neutral
                 else native.preview(work.photo.file, lut, work.edits, edge, work.interactive)
             val neutralBitmap = neutral.bitmap()
             WorkResult.Preview(work, PreviewPair(neutralBitmap,
-                if (neutral === film) neutralBitmap else film.bitmap(), neutral.temperature, neutral.tint))
+                if (neutral === film) neutralBitmap else film.bitmap(), neutral.temperature, neutral.tint,
+                if (neutral.backend == 2 && film.backend == 2) 2 else 0, (System.nanoTime() - started) / 1_000_000))
         }
         is Work.Export -> {
             val output = storage.temporaryOutput(work.png)
             try {
+                engine().setGpuMode(work.gpuMode)
                 engine().export(work.photo.file, storage.filmPath(work.edits.film), work.edits, output, work.png)
                 if (work.destination == null) storage.saveAlbum(output, work.png)
                 else storage.saveDocument(output, work.destination, work.photo.uri)
@@ -104,18 +111,25 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
     fun importPhoto(uri: Uri?) {
         if (uri == null || mutable.value.operation != Operation.NONE) return
         mutable.value = mutable.value.copy(operation = Operation.IMPORT, rendering = true, error = null)
-        currentRevision = queue.submit(Work.Import(uri))
+        currentRevision = queue.submit(Work.Import(uri, gpuMode()))
     }
 
     fun edit(edits: EditSettings, interactive: Boolean = false) {
         val current = mutable.value
         if (!current.controlsEnabled) return
         mutable.value = current.copy(edits = edits, rendering = true, exact = false, error = null)
-        currentRevision = queue.submit(Work.Preview(current.photo!!, edits, interactive))
+        currentRevision = queue.submit(Work.Preview(current.photo!!, edits, interactive, gpuMode()))
     }
 
     fun retry() { edit(mutable.value.edits) }
     fun reset() { edit(mutable.value.edits.reset()) }
+
+    private fun gpuMode() = if (mutable.value.gpuEnabled) NativeProcessor.AUTO else NativeProcessor.CPU
+    fun setGpuEnabled(enabled: Boolean) {
+        if (mutable.value.operation != Operation.NONE) return
+        mutable.value = mutable.value.copy(gpuEnabled = enabled)
+        if (mutable.value.photo != null) edit(mutable.value.edits)
+    }
 
     fun beginExport(): Boolean {
         if (!mutable.value.canExport) return false
@@ -129,7 +143,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
         val current = mutable.value
         if (current.operation != Operation.PICK_EXPORT || current.photo == null) return
         mutable.value = current.copy(operation = Operation.EXPORT)
-        currentRevision = queue.submit(Work.Export(current.photo, current.edits, destination, png))
+        currentRevision = queue.submit(Work.Export(current.photo, current.edits, destination, png, gpuMode()))
     }
     fun dismissMessage() { mutable.value = mutable.value.copy(message = null) }
     private fun text(id: Int) = getApplication<Application>().getString(id)

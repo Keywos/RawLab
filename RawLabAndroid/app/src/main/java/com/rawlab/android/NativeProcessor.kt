@@ -4,14 +4,21 @@ import android.graphics.Bitmap
 import java.io.File
 import java.nio.ByteBuffer
 
-class NativeFrame(val width: Int, val height: Int, val pixels: ByteArray, val temperature: Float, val tint: Float) {
+class NativeFrame(val width: Int, val height: Int, val pixels: ByteArray, val temperature: Float, val tint: Float, val backend: Int) {
     fun bitmap(): Bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
         it.copyPixelsFromBuffer(ByteBuffer.wrap(pixels))
     }
 }
 
-class NativeProcessor : AutoCloseable {
-    private var handle = nativeCreate().also { check(it != 0L) }
+class NativeProcessor(mode: Int = AUTO) : AutoCloseable {
+    private var handle = nativeCreate(mode).also { check(it != 0L) }
+
+    @Synchronized
+    fun setGpuMode(mode: Int) {
+        check(handle != 0L)
+        require(mode in CPU..FORCE)
+        nativeSetGpuMode(handle, mode)
+    }
 
     @Synchronized
     fun preview(input: File, lut: File?, settings: EditSettings, edge: Int, interactive: Boolean): NativeFrame {
@@ -33,11 +40,17 @@ class NativeProcessor : AutoCloseable {
         if (handle != 0L) { nativeDestroy(handle); handle = 0L }
     }
 
-    private external fun nativeCreate(): Long
+    private external fun nativeCreate(mode: Int): Long
+    private external fun nativeSetGpuMode(handle: Long, mode: Int)
     private external fun nativeDestroy(handle: Long)
     private external fun nativeProcess(handle: Long, input: String, lut: String?, output: String?,
         strength: Float, exposure: Float, customWb: Boolean, temperature: Float, tint: Float,
         edge: Int, interactive: Boolean, png: Boolean): NativeFrame?
 
-    companion object { init { System.loadLibrary("rawlab-jni") } }
+    companion object {
+        const val CPU = 0
+        const val AUTO = 1
+        const val FORCE = 2
+        init { System.loadLibrary("rawlab-jni") }
+    }
 }

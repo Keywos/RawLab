@@ -44,4 +44,10 @@
     <string name="invalid_value">请输入范围内的有效数字</string>
     <string name="reset_value">重置此项</string>
     <string name="licenses">开源许可</string>
+    <string name="more">更多</string>
+    <string name="gpu_auto">硬件加速（自动回退）</string>
+    <string name="collapse_adjustments">收起调整</string>
+    <string name="expand_adjustments">展开调整</string>
+    <string name="comparison_wipe">中性与胶片效果分界</string>
+    <string name="gpu_fallback">CPU · 回退</string>
 </resources>

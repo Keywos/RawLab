@@ -66,7 +66,7 @@ private fun RawLabApp(model: EditorViewModel) {
         EditorScreen(state, onAlbum = { album = true }, onFile = { openFile.launch(arrayOf("*/*")) },
             onEdit = model::edit, onReset = model::reset, onRetry = model::retry,
             onExport = { if (model.beginExport()) exportDialog = true },
-            onMessageDismiss = model::dismissMessage, onLicenses = { licenses = true })
+            onMessageDismiss = model::dismissMessage, onLicenses = { licenses = true }, onGpuChange = model::setGpuEnabled)
     }
     if (exportDialog) AlertDialog(
         onDismissRequest = { exportDialog = false; model.cancelExport() },

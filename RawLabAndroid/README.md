@@ -14,6 +14,10 @@ Native Kotlin / Jetpack Compose RAW editor using the shared C++ pipeline through
   Ten film looks, neutral/result comparison, strength, exposure and calibrated RAW white balance.
 - 1000px 交互预览、1600px 精确预览；串行渲染只保留最新待处理调整。旋转屏幕保留当前编辑。
   Bounded interactive/exact previews with serialized latest-request scheduling and rotation-safe state.
+- 默认启用 GLES 像素加速，失败自动回退 CPU；更多菜单可关闭。画布角标显示实际后端和已完成的渲染耗时。
+  GLES pixel acceleration defaults to Auto with CPU fallback; the menu can disable it. The canvas reports the actual completed backend/time.
+- 竖屏采用单画面滑动对比、可收起底栏、固定底部工具行；色温与色调分别调整，无需滚动整个工具栏。
+  Portrait uses a full-size before/after wipe, collapsible controls, a fixed bottom tool row, and separate temperature/tint tools.
 - 原尺寸 JPEG (quality 95) / 16-bit PNG。Android 10+ 可直接保存到相册；所有支持版本均可保存到文件。
   Native-resolution JPEG/16-bit PNG, saved to albums on Android 10+ or to a document on every supported version.
 
@@ -81,8 +85,10 @@ The fixture is packaged only into the test APK. See [verification.md](verificati
 
 ## 边界 / Limitations
 
-- 首版采用 CPU，不启用 Android GLES；不能等同于 Mac 的 Metal 加速。
-  CPU rendering only; no claim of Mac Metal performance parity.
+- GLES 3.1 加速缩放、曝光/色彩转换、中性映射、胶片及强度和逐像素明暗处理。RAW 解码、去马赛克、文件编码仍在 CPU。
+  GLES 3.1 accelerates resizing, exposure/matrices, neutral mapping, LUT/blending and pointwise tone. RAW decoding/demosaic and encoding stay on CPU.
+- 当前界面未提供的锐化/降噪邻域运算不走 GLES；C API Auto 回退 CPU，Force 报错。真机数据见 [GPU 验证记录](gpu-verification.md)。
+  Neighborhood sharpening/denoise are not accelerated by GLES: C API Auto falls back, Force fails. See [GPU verification](gpu-verification.md).
 - 全尺寸 RAW 显影需要较多 native 内存。低内存设备可能失败或被系统终止；没有验证所有相机和像素尺寸。
   Full-resolution RAW development is memory-intensive; low-memory devices may fail or be killed by the OS.
 - LibRaw 启用 zlib，不编译可选 LCMS/JPEG/JasPer/RawSpeed/DNG SDK 集成；有损 JPEG DNG、JPEG2000 等依赖这些可选组件的格式不保证支持。

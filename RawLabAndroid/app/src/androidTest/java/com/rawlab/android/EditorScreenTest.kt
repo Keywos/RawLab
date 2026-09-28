@@ -8,6 +8,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.test.platform.app.InstrumentationRegistry
 import android.net.Uri
@@ -43,6 +46,17 @@ class EditorScreenTest {
         assertNull(model.state.value.error)
         assertEquals("velvia", model.state.value.edits.film)
         compose.onNodeWithContentDescription("对比").performClick()
+        compose.onNodeWithTag("comparison-wipe").assertExists().performSemanticsAction(SemanticsActions.SetProgress) { it(.3f) }
+        compose.onNodeWithContentDescription("收起调整").performClick()
+        compose.onNodeWithText("色温").assertDoesNotExist()
+        capture("editor-collapsed.png")
+        compose.onNodeWithContentDescription("展开调整").performClick()
+        compose.onNodeWithText("色温").performClick()
+        compose.onNodeWithTag("adjustment-slider").assertIsDisplayed()
+        compose.onNodeWithText("色调").performClick()
+        compose.onNodeWithTag("adjustment-slider").assertIsDisplayed()
+        capture("editor-tint.png")
+        compose.onNodeWithText("胶片").performClick()
         compose.waitForIdle()
         capture("editor-comparison.png")
         val empty = File(instrumentation.targetContext.cacheDir, "empty-test.dng").apply { writeBytes(byteArrayOf()) }

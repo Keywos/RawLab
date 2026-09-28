@@ -81,6 +81,16 @@ reference if Metal cannot render; Force reports an error. Request v2 layout is
 unchanged. `sony2fuji_session_get_last_backend` diagnoses the pixel pipeline, not
 LibRaw or file encoding. Two processing buffers are reused between GPU kernels.
 
+Android uses an OpenGL ES 3.1 compute photo pipeline with the same operation
+order and explicit trilinear LUT interpolation. Pointwise processing and resizing
+run on GPU; neighborhood detail filters use CPU in Auto and fail in Force.
+Source uploads are bounded row bands, and only a reduced linear preview is
+cached by RAW decode revision. Native-resolution exports never use that preview.
+`SONY2FUJI_BACKEND_GLES` reports actual GPU completion, including neutral renders;
+Auto preserves the CPU source when GPU work fails. RAW decoding and encoding
+remain on CPU. Physical-device parity and timing are recorded in
+`../../RawLabAndroid/gpu-verification.md`.
+
 `sony2fuji_analyze_image` returns exact channel-major 256-bin RGB counts and an
 optional RGBA clipping mask. Its Auto mode prefers CPU for CPU-resident bytes,
 based on measured transfer/synchronization overhead; Force requires Metal. Both

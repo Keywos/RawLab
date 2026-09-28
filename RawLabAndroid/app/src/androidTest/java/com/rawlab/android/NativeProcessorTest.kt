@@ -9,6 +9,20 @@ import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class NativeProcessorTest {
+    @Test fun gpuCanBeDisabledAndRestoredWithoutLosingSession() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val input = File(instrumentation.targetContext.cacheDir, "gpu-mode-test.arw")
+        instrumentation.context.assets.open("DSC09067.ARW").use { from -> input.outputStream().use { from.copyTo(it) } }
+        try {
+            NativeProcessor(NativeProcessor.FORCE).use { processor ->
+                assertEquals(2, processor.preview(input, null, EditSettings(), 400, false).backend)
+                processor.setGpuMode(NativeProcessor.CPU)
+                assertEquals(0, processor.preview(input, null, EditSettings(), 400, false).backend)
+                processor.setGpuMode(NativeProcessor.AUTO)
+                assertEquals(2, processor.preview(input, null, EditSettings(), 400, false).backend)
+            }
+        } finally { input.delete() }
+    }
     @Test fun realRawPreviewAndFullResolutionExport() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext

@@ -165,7 +165,8 @@ typedef struct sony2fuji_session sony2fuji_session;
 
 typedef enum sony2fuji_render_backend {
     SONY2FUJI_BACKEND_CPU = 0,
-    SONY2FUJI_BACKEND_METAL = 1
+    SONY2FUJI_BACKEND_METAL = 1,
+    SONY2FUJI_BACKEND_GLES = 2
 } sony2fuji_render_backend;
 
 // ============================================================================

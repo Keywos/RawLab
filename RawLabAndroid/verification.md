@@ -1,5 +1,8 @@
 # Android Verification
 
+This records the initial CPU-only client. Current hardware acceleration and
+portrait-first UI evidence is in [gpu-verification.md](gpu-verification.md).
+
 Date: 2026-09-28. Local development evidence, not a store release or a claim
 of compatibility with every Android device.
 

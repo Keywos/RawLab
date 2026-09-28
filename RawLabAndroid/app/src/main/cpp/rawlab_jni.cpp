@@ -38,13 +38,14 @@ struct Buffer {
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_rawlab_android_NativeProcessor_nativeCreate(JNIEnv* env, jobject) {
+Java_com_rawlab_android_NativeProcessor_nativeCreate(JNIEnv* env, jobject, jint mode) {
     try {
         std::lock_guard<std::mutex> lock(sessionsMutex);
+        if (mode < SONY2FUJI_GPU_OFF || mode > SONY2FUJI_GPU_FORCE) throw std::invalid_argument("Invalid GPU mode");
         sony2fuji_session* pointer = nullptr;
         check(sony2fuji_session_create(&pointer));
         Session session(pointer);
-        sony2fuji_gpu_config config{SONY2FUJI_GPU_CONFIG_VERSION, sizeof(sony2fuji_gpu_config), SONY2FUJI_GPU_OFF};
+        sony2fuji_gpu_config config{SONY2FUJI_GPU_CONFIG_VERSION, sizeof(sony2fuji_gpu_config), static_cast<sony2fuji_gpu_mode>(mode)};
         check(sony2fuji_session_set_gpu_config(pointer, &config));
         const jlong id = nextId++;
         sessions.emplace(id, std::move(session));
@@ -62,6 +63,17 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_rawlab_android_NativeProcessor_nativeDestroy(JNIEnv*, jobject, jlong id) {
     std::lock_guard<std::mutex> lock(sessionsMutex);
     sessions.erase(id);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_rawlab_android_NativeProcessor_nativeSetGpuMode(JNIEnv* env, jobject, jlong id, jint mode) {
+    try {
+        std::lock_guard<std::mutex> lock(sessionsMutex);
+        const auto found = sessions.find(id);
+        if (found == sessions.end() || mode < 0 || mode > 2) throw std::invalid_argument("Invalid processor or GPU mode");
+        sony2fuji_gpu_config config{SONY2FUJI_GPU_CONFIG_VERSION, sizeof(config), static_cast<sony2fuji_gpu_mode>(mode)};
+        check(sony2fuji_session_set_gpu_config(found->second.get(), &config));
+    } catch (const std::exception& error) { throwJava(env, "java/lang/IllegalArgumentException", error.what()); }
 }
 
 extern "C" JNIEXPORT jobject JNICALL
@@ -96,10 +108,10 @@ Java_com_rawlab_android_NativeProcessor_nativeProcess(JNIEnv* env, jobject, jlon
         sony2fuji_session_get_raw_white_balance(session, &kelvin, &wbTint);
         auto type = env->FindClass("com/rawlab/android/NativeFrame");
         if (!type) return nullptr;
-        auto constructor = env->GetMethodID(type, "<init>", "(II[BFF)V");
+        auto constructor = env->GetMethodID(type, "<init>", "(II[BFFI)V");
         if (!constructor) return nullptr;
         return env->NewObject(type, constructor, static_cast<jint>(b.width),
-            static_cast<jint>(b.height), pixels, kelvin, wbTint);
+            static_cast<jint>(b.height), pixels, kelvin, wbTint, static_cast<jint>(sony2fuji_session_get_last_backend(session)));
     } catch (const std::bad_alloc&) {
         throwJava(env, "java/lang/OutOfMemoryError", "Not enough memory to develop this RAW");
     } catch (const std::invalid_argument& error) {
