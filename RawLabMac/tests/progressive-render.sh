@@ -4,7 +4,8 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Library/Developer/CommandLineTools}"
 SDK="${SDKROOT:-/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk}"
 OUT="$(mktemp -d /tmp/rawlab-progressive-render.XXXXXX)"
-RAW="${1:-$ROOT/RawLab/RawLab/Resources/Samples/DSC09067.ARW}"
+RAW="${1:-${RAWLAB_TEST_RAW:-}}"
+test -f "$RAW" || { echo 'Set RAWLAB_TEST_RAW or pass an external RAW path'; exit 1; }
 LUT="${2:-$ROOT/lutools/flog-2-new/FLog2_to_PROVIA_65grid_V.1.00.cube}"
 
 swiftc -swift-version 5 -O -sdk "$SDK" \

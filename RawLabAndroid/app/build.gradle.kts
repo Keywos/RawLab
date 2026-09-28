@@ -5,6 +5,12 @@ plugins {
 }
 
 val repo = rootDir.parentFile
+val testRaw = providers.gradleProperty("rawlabTestRaw").orElse(providers.environmentVariable("RAWLAB_TEST_RAW"))
+val testAssets = layout.buildDirectory.dir("generated/rawlabTestAssets")
+val prepareTestAssets by tasks.registering(Sync::class) {
+    into(testAssets)
+    if (testRaw.isPresent) from(testRaw.get()) { rename { "sample.RAW" } }
+}
 val generatedAssets = layout.buildDirectory.dir("generated/rawlabAssets")
 val prepareAssets by tasks.registering(Sync::class) {
     into(generatedAssets)
@@ -58,12 +64,13 @@ android {
     externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     sourceSets["main"].assets.srcDir(generatedAssets)
     sourceSets["main"].res.srcDir(generatedResources)
-    sourceSets["androidTest"].assets.srcDir(repo.resolve("RawLab/RawLab/Resources/Samples"))
+    sourceSets["androidTest"].assets.srcDir(testAssets)
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     testOptions { unitTests.isReturnDefaultValues = true }
 }
 
 tasks.named("preBuild").configure { dependsOn(prepareAssets, prepareIcon) }
+tasks.matching { it.name.endsWith("AndroidTestAssets") }.configureEach { dependsOn(prepareTestAssets) }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2025.04.01"))

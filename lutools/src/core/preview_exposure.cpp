@@ -1,4 +1,5 @@
 #include "preview_exposure.h"
+#include "file_path.h"
 #include <libraw/libraw.h>
 #include <algorithm>
 #include <cmath>
@@ -44,7 +45,7 @@ std::vector<float> loadPreviewLuminance(const std::string& path) {
     // Keep thumbnail failures/recycle separate from the active RAW decoder.
     // LibRaw is larger than a macOS dispatch worker's default stack.
     auto raw=std::make_unique<LibRaw>();
-    if (raw->open_file(path.c_str())!=LIBRAW_SUCCESS || raw->unpack_thumb()!=LIBRAW_SUCCESS) return {};
+    if (openRawFile(*raw,path)!=LIBRAW_SUCCESS || raw->unpack_thumb()!=LIBRAW_SUCCESS) return {};
     // DNG: 0 unspecified, 1 gray gamma 2.2, 2 sRGB. Do not reinterpret a
     // declared Adobe RGB/ProPhoto preview as sRGB for exposure metering.
     const unsigned previewSpace=raw->imgdata.color.dng_levels.preview_colorspace;

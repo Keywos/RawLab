@@ -4,7 +4,7 @@
 - `RawLab/` contains the SwiftUI app sources. Entry point is `RawLabApp.swift`, UI is in `ContentView.swift`, and image processing lives in `RawEditorViewModel.swift`.
 - `RawLab/Assets.xcassets/` holds app icons and bundled assets.
 - `RawLab/x100vi-3d-lut-v100/` stores bundled LUT `.cube` files and reference PDFs.
-- `RawLab/DSC09067.ARW` is a sample RAW file used for local testing.
+- RAW fixtures are external files; do not add personal photos to the repository. Set `RAWLAB_TEST_RAW` for local test scripts.
 - `RawLab.xcodeproj/` is the Xcode project (schemes, build settings, and targets).
 
 ## Build, Test, and Development Commands

@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <filesystem>
 #include <mutex>
 #include <sstream>
 #include <sys/stat.h>
@@ -29,7 +30,7 @@ RGB LUT3D::getValue(int r, int g, int b) const {
 
 ErrorCode LUT3D::parseCubeFile(const std::string& path) {
     *this = LUT3D();
-    std::ifstream file(path);
+    std::ifstream file(std::filesystem::u8path(path));
     if (!file) return ErrorCode::FileNotFound;
     std::string line, gamma, gamut;
     std::vector<RGB> values;
@@ -91,17 +92,21 @@ std::unique_ptr<LUT3D> LUTParser::loadLUT(const std::string& path) {
 }
 
 std::shared_ptr<LUT3D> LUTParser::loadLUTCached(const std::string& path) {
-    struct stat info{};
-    if (stat(path.c_str(), &info) != 0) return nullptr;
+    std::error_code error;
+    const auto filePath = std::filesystem::u8path(path);
+    const auto stamp = std::filesystem::last_write_time(filePath, error);
+    if (error) return nullptr;
+    const auto bytes = std::filesystem::file_size(filePath, error);
+    if (error) return nullptr;
     static std::mutex mutex;
     static std::string previous;
-    static time_t modified = 0;
-    static off_t size = 0;
+    static std::filesystem::file_time_type modified;
+    static uintmax_t size = 0;
     static std::shared_ptr<LUT3D> cached;
     std::lock_guard<std::mutex> lock(mutex);
-    if (previous == path && modified == info.st_mtime && size == info.st_size && cached) return cached;
+    if (previous == path && modified == stamp && size == bytes && cached) return cached;
     cached = loadLUT(path);
-    previous = path; modified = info.st_mtime; size = info.st_size;
+    previous = path; modified = stamp; size = bytes;
     return cached;
 }
 

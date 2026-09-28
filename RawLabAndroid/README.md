@@ -1,5 +1,9 @@
 # RawLab Android
 
+真实 RAW 仪器测试使用外部样片：设置 `RAWLAB_TEST_RAW` 或传入
+`-PrawlabTestRaw=/path/to/photo.ARW`。构建时仅复制到测试 APK 的 `sample.RAW`；
+照片不再随仓库分发，也不进入正式 APK。
+
 原生 Kotlin / Jetpack Compose RAW 编辑器，通过 JNI 复用仓库的 C++ 显影核心。
 
 Native Kotlin / Jetpack Compose RAW editor using the shared C++ pipeline through JNI.

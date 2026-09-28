@@ -14,8 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 # DEFAULT PATHS
 # =============================
 DEFAULT_LUT = ROOT_DIR / "F-Log2" / "X100VI_FLog2_FGamut_to_ETERNA_BT.709_33grid_V.1.00.cube"
-DEFAULT_INPUT = ROOT_DIR / "DSC09067.ARW"
-DEFAULT_OUTPUT = ROOT_DIR / "output_dsc09067_eterna_uv.jpg"
+DEFAULT_OUTPUT = ROOT_DIR / "output_eterna_uv.jpg"
 
 F_GAMUT_PRIMARIES = np.array(
     [
@@ -41,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Apply a Fujifilm F-Log2 LUT to a Sony ARW using rawpy + colour."
     )
-    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--input", type=Path, required=True, help="External RAW fixture path")
     parser.add_argument("--lut", type=Path, default=DEFAULT_LUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--exposure-shift", type=float, default=0.0)

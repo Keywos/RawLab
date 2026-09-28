@@ -41,5 +41,7 @@ output/
 !.env.example
 *.pem
 *.key
+RawLabWindows/**/bin/
+RawLabWindows/**/obj/
 *.p12
 *.mobileprovision

@@ -8,7 +8,12 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 
 namespace {
 void check(bool condition, const std::string& name) {
@@ -59,8 +64,12 @@ int main(int argc, char** argv) {
     for (float temperature : {0.f, 4000.f, 8500.f}) {
         request.wb_mode = temperature ? SONY2FUJI_WB_TEMPERATURE : SONY2FUJI_WB_CAMERA;
         request.temperature = temperature ? temperature : 6500;
-        compare(render(cpu, request), render(gpu, request), 2, "RAW CPU/Metal WB " + std::to_string(temperature));
+        compare(render(cpu, request), render(gpu, request), 2, "RAW CPU/GPU WB " + std::to_string(temperature));
+#ifdef SONY2FUJI_ENABLE_D3D11
+        check(sony2fuji_session_get_last_backend(gpu.value) == SONY2FUJI_BACKEND_D3D11, "actual Direct3D 11 hardware backend");
+#else
         check(sony2fuji_session_get_last_backend(gpu.value) == SONY2FUJI_BACKEND_METAL, "actual Metal backend");
+#endif
     }
     request.exposure_ev = .4f; request.contrast = 1.2f; request.saturation = .7f;
     request.highlights = .3f; request.shadows = -.2f; request.tone_curve = .2f;
@@ -87,7 +96,8 @@ int main(int argc, char** argv) {
     request.output_target = SONY2FUJI_TARGET_FILE; request.output_format = SONY2FUJI_OUTPUT_PNG;
     auto path = std::filesystem::temp_directory_path() /
         ("rawtools-acceleration-" + std::to_string(getpid()) + ".png");
-    request.output_path = path.c_str();
+    const auto outputPath = path.u8string();
+    request.output_path = outputPath.c_str();
     check(sony2fuji_process(gpu.value, &request, nullptr) == SONY2FUJI_STATUS_OK, "export with interactive flag");
     const auto interactiveFile = readFile(path);
     sony2fuji_session_set_interactive_preview(gpu.value, 0);

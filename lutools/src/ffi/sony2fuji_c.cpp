@@ -3,6 +3,9 @@
 #include "sony2fuji/sony2fuji.h"
 #include "core/photo_rendering.h"
 #include "gpu/image_stats.h"
+#if defined(SONY2FUJI_ENABLE_D3D11)
+#include "gpu/d3d11_photo.h"
+#endif
 #if defined(SONY2FUJI_ENABLE_GLES)
 #include "gpu/gles_photo.h"
 #endif
@@ -39,6 +42,11 @@ struct sony2fuji_session {
     sony2fuji_render_backend last_backend = SONY2FUJI_BACKEND_CPU;
 #if defined(SONY2FUJI_ENABLE_GLES)
     std::unique_ptr<sony2fuji::GlesPhotoRenderer> gles_renderer;
+#endif
+#if defined(SONY2FUJI_ENABLE_D3D11)
+    std::unique_ptr<sony2fuji::D3D11PhotoRenderer> d3d_renderer;
+#endif
+#if defined(SONY2FUJI_ENABLE_GLES) || defined(SONY2FUJI_ENABLE_D3D11)
     uint64_t raw_revision = 0;
 #endif
 };
@@ -341,9 +349,11 @@ sony2fuji_status validateRequest(
         }
         if (request->input_type == SONY2FUJI_INPUT_RAW) {
             std::error_code error;
-            const bool sameFile = std::filesystem::equivalent(request->input_path, request->output_path, error);
-            if (sameFile || std::filesystem::weakly_canonical(request->input_path) ==
-                std::filesystem::weakly_canonical(request->output_path))
+            const auto inputPath = std::filesystem::u8path(request->input_path);
+            const auto outputPath = std::filesystem::u8path(request->output_path);
+            const bool sameFile = std::filesystem::equivalent(inputPath, outputPath, error);
+            if (sameFile || std::filesystem::weakly_canonical(inputPath) ==
+                std::filesystem::weakly_canonical(outputPath))
                 return SONY2FUJI_STATUS_INVALID_ARGUMENT;
         }
     } else if (request->output_target == SONY2FUJI_TARGET_BUFFER) {
@@ -675,10 +685,14 @@ sony2fuji_status loadRawImage(
     sony2fuji::ImageData& image, sony2fuji_color_space* space, bool* is_linear,
     bool copyImage = true
 ) {
-    struct stat fileInfo{};
-    if (stat(request.input_path, &fileInfo) != 0) return SONY2FUJI_STATUS_IO_ERROR;
-    const std::string fileKey = std::string(request.input_path) + ":" + std::to_string(fileInfo.st_mtime) +
-        ":" + std::to_string(fileInfo.st_size);
+    std::error_code fileError;
+    const auto inputPath = std::filesystem::u8path(request.input_path);
+    const auto modified = std::filesystem::last_write_time(inputPath, fileError);
+    if (fileError) return SONY2FUJI_STATUS_IO_ERROR;
+    const auto fileSize = std::filesystem::file_size(inputPath, fileError);
+    if (fileError) return SONY2FUJI_STATUS_IO_ERROR;
+    const std::string fileKey = std::string(request.input_path) + ":" +
+        std::to_string(modified.time_since_epoch().count()) + ":" + std::to_string(fileSize);
     const bool interactive = session->interactive_preview && request.intent == SONY2FUJI_INTENT_PREVIEW &&
         request.output_target == SONY2FUJI_TARGET_BUFFER &&
         !(session->raw_exposure_mode == SONY2FUJI_EXPOSURE_PREVIEW && request.wb_mode == SONY2FUJI_WB_CAMERA);
@@ -729,7 +743,7 @@ sony2fuji_status loadRawImage(
             return mapError(result);
         }
         session->raw_cache = std::move(decoded);
-#if defined(SONY2FUJI_ENABLE_GLES)
+#if defined(SONY2FUJI_ENABLE_GLES) || defined(SONY2FUJI_ENABLE_D3D11)
         ++session->raw_revision;
 #endif
         session->raw_key = key;
@@ -904,6 +918,9 @@ sony2fuji_status sony2fuji_session_set_gpu_config(
         return status;
     }
     session->gpu_config.mode = toCoreGpuMode(config->mode);
+#if defined(SONY2FUJI_ENABLE_D3D11)
+    if (session->gpu_config.mode == sony2fuji::GpuMode::Off) session->d3d_renderer.reset();
+#endif
 #if defined(SONY2FUJI_ENABLE_GLES)
     if (session->gpu_config.mode == sony2fuji::GpuMode::Off) session->gles_renderer.reset();
 #endif
@@ -961,7 +978,7 @@ static sony2fuji_status processImpl(
     sony2fuji_request local = *request;
     local.lut_strength = clampFloat(local.lut_strength, 0.0f, 2.0f);
     session->last_backend = SONY2FUJI_BACKEND_CPU;
-#if defined(SONY2FUJI_ENABLE_METAL) || defined(SONY2FUJI_ENABLE_GLES)
+#if defined(SONY2FUJI_ENABLE_METAL) || defined(SONY2FUJI_ENABLE_GLES) || defined(SONY2FUJI_ENABLE_D3D11)
     const bool gpuPipeline = session->gpu_config.mode != sony2fuji::GpuMode::Off;
 #else
     const bool gpuPipeline = false;
@@ -1030,6 +1047,25 @@ static sony2fuji_status processImpl(
         if (session->gles_renderer->render(source, toCoreColorSpace(color_space), local, lut, wb,
                 width, height, raw ? session->raw_revision : 0, rendered)) {
             session->last_backend = SONY2FUJI_BACKEND_GLES;
+            if (local.output_target == SONY2FUJI_TARGET_FILE) return writeOutputFile(local, rendered);
+            return writeOutputBuffer(local, rendered, out_buffer);
+        }
+        if (session->gpu_config.mode == sony2fuji::GpuMode::Force) return SONY2FUJI_STATUS_PROCESSING_ERROR;
+        if (raw) image = session->raw_cache;
+    }
+#endif
+#if defined(SONY2FUJI_ENABLE_D3D11)
+    if (gpuPipeline) {
+        uint32_t width, height;
+        status = computeTargetSize(local, image.width, image.height, &width, &height);
+        if (status != SONY2FUJI_STATUS_OK) return status;
+        if (!session->d3d_renderer) session->d3d_renderer = std::make_unique<sony2fuji::D3D11PhotoRenderer>();
+        const bool raw = local.input_type == SONY2FUJI_INPUT_RAW;
+        const auto& source = raw ? session->raw_cache : image;
+        sony2fuji::ImageData rendered;
+        if (session->d3d_renderer->render(source, toCoreColorSpace(color_space), local, lut, wb,
+                width, height, raw ? session->raw_revision : 0, rendered)) {
+            session->last_backend = SONY2FUJI_BACKEND_D3D11;
             if (local.output_target == SONY2FUJI_TARGET_FILE) return writeOutputFile(local, rendered);
             return writeOutputBuffer(local, rendered, out_buffer);
         }

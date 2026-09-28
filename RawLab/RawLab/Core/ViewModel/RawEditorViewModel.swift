@@ -37,7 +37,7 @@ final class RawEditorViewModel: ObservableObject {
     var previewWorkItem: DispatchWorkItem?
     var histogramWorkItem: DispatchWorkItem?
     var lastPreviewRequest: PreviewRequest?
-    let sampleResourceName = "DSC09067"
+    let sampleResourceName = "sample"
     let sampleResourceExtension = "ARW"
     let previewMaxDimension: CGFloat = 1280
     let interactivePreviewMaxDimension: CGFloat = 720

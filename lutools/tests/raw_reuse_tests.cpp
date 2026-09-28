@@ -6,6 +6,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -89,7 +90,8 @@ void checkTemperatureDoesNotReopen(const std::string& filepath) {
     const auto temporary = std::filesystem::temp_directory_path() /
         ("rawtools-reuse-" + std::to_string(static_cast<unsigned long long>(std::hash<std::string>{}(filepath))) + ".raw");
     std::filesystem::copy_file(filepath, temporary, std::filesystem::copy_options::overwrite_existing);
-    RAWProcessor processor;
+    auto processorOwner = std::make_unique<RAWProcessor>();
+    auto& processor = *processorOwner;
     const auto options4000 = temperatureOptions(4000);
     const auto options8500 = temperatureOptions(8500);
     ImageData first, second;
@@ -98,9 +100,19 @@ void checkTemperatureDoesNotReopen(const std::string& filepath) {
     std::error_code error;
     std::filesystem::remove(temporary.string() + ".moved");
     std::filesystem::rename(temporary, temporary.string() + ".moved", error);
+#ifdef _WIN32
+    // Windows fopen denies rename while the decoder owns the file handle.
+    // Still compare reused WB; the source-removal proof runs on POSIX.
+    const bool secondOk = firstOk &&
+        processor.process(options8500, second) == ErrorCode::Success;
+    check(secondOk && equalPixels(renderFresh(filepath, options8500), second, "Windows WB reuse"),
+        "temperature WB reuses the Windows decoder and matches a fresh render");
+#else
     const bool secondOk = firstOk && !error &&
         processor.process(options8500, second) == ErrorCode::Success;
     check(secondOk, "temperature WB reuses unpacked RAW after source rename");
+#endif
+    processorOwner.reset();
     std::filesystem::remove(temporary.string() + ".moved");
     std::filesystem::remove(temporary);
 }
@@ -159,16 +171,22 @@ void checkInvalidLoadClearsState(const std::string& filepath) {
 } // namespace
 
 int main(int argc, char** argv) {
+    std::cout << std::unitbuf;
     if (argc < 2 || argc > 3) {
         std::cerr << "usage: raw_reuse_tests SONY_RAW [DNG_RAW]\n";
         return 2;
     }
     const std::string sonyRaw = argv[1];
-    checkWhiteBalanceReuse(sonyRaw);
-    checkTemperatureDoesNotReopen(sonyRaw);
-    checkHalfSizeReuse(sonyRaw, true);
-    checkInvalidLoadClearsState(sonyRaw);
-    if (argc == 3 && std::filesystem::exists(argv[2]))
-        checkHalfSizeReuse(argv[2], true);
+    try {
+        checkWhiteBalanceReuse(sonyRaw);
+        checkTemperatureDoesNotReopen(sonyRaw);
+        checkHalfSizeReuse(sonyRaw, true);
+        checkInvalidLoadClearsState(sonyRaw);
+        if (argc == 3 && std::filesystem::exists(argv[2]))
+            checkHalfSizeReuse(argv[2], true);
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
     return failures == 0 ? 0 : 1;
 }

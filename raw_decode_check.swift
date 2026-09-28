@@ -3,7 +3,10 @@ import CoreImage
 import CoreGraphics
 import ImageIO
 
-let rawPath = "/Users/xupeng/mycode/rawtools/RawLab/RawLab/DSC09067.ARW"
+guard let rawPath = CommandLine.arguments.dropFirst().first ?? ProcessInfo.processInfo.environment["RAWLAB_TEST_RAW"] else {
+    print("Pass an external RAW path or set RAWLAB_TEST_RAW")
+    exit(1)
+}
 let url = URL(fileURLWithPath: rawPath)
 
 guard FileManager.default.fileExists(atPath: url.path) else {

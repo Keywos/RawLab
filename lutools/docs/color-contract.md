@@ -73,6 +73,19 @@ white-balance edit does not also re-meter the scene.
 
 ### Hardware Acceleration
 
+Windows uses a session-owned Direct3D 11 compute pipeline with hardware feature
+level 11.0 adapters. It mirrors the CPU order for gamut matrices, exposure,
+neutral/F-Log2/LUT blending, tone/color, box-blur-based detail and resizing.
+Preview reduction occurs before effects only when sharpening is zero; FINAL
+resizes display output after effects. Immutable RAW uploads are keyed by decode
+revision, including interactive/exact quality transitions. LUTs use explicit
+trilinear interpolation with their declared domains. `SONY2FUJI_BACKEND_D3D11`
+reports completed hardware processing. WARP is excluded. Auto falls back to CPU
+on device/resource/dispatch/readback failure; Force returns a processing error.
+Windows histogram/clipping statistics remain on CPU for already-read-back pixels.
+The C ABI path encoding is UTF-8 on Windows, converted to Unicode for filesystem
+access. The request v2 layout is unchanged.
+
 The Metal photo pipeline mirrors CPU operation order: optional preview resize,
 input-gamut to linear sRGB, relative WB/exposure, neutral display or F-Gamut/F-Log2
 and LUT, strength blend, tone/color, detail, final resize. RAW absolute WB and
