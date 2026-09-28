@@ -36,16 +36,20 @@ if(ANDROID)
 endif()
 
 # LibRaw
-pkg_check_modules(LIBRAW REQUIRED libraw)
-find_library(LIBRAW_LIBRARY NAMES raw HINTS ${LIBRAW_LIBRARY_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-if(NOT LIBRAW_LIBRARY)
-    message(FATAL_ERROR "libraw not found in ${LIBRAW_LIBRARY_DIRS}")
+if(SONY2FUJI_LIBRAW_TARGET AND TARGET ${SONY2FUJI_LIBRAW_TARGET})
+    set(LIBRAW_LIBRARY ${SONY2FUJI_LIBRAW_TARGET})
+else()
+    pkg_check_modules(LIBRAW REQUIRED libraw)
+    find_library(LIBRAW_LIBRARY NAMES raw HINTS ${LIBRAW_LIBRARY_DIRS} NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+    if(NOT LIBRAW_LIBRARY)
+        message(FATAL_ERROR "libraw not found in ${LIBRAW_LIBRARY_DIRS}")
+    endif()
 endif()
 
 # 包含目录
 include_directories(
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${LIBRAW_INCLUDE_DIRS}
 )
 
@@ -70,7 +74,7 @@ if(SONY2FUJI_ENABLE_GPU)
         set_source_files_properties(src/gpu/metal_lut.mm src/gpu/metal_photo.mm src/gpu/metal_stats.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     endif()
     if(ANDROID)
-        list(APPEND CORE_SOURCES src/gpu/gles_lut.cpp)
+        list(APPEND CORE_SOURCES src/gpu/gles_lut.cpp src/gpu/gles_photo.cpp)
         add_compile_definitions(SONY2FUJI_ENABLE_GLES)
     endif()
 endif()
@@ -89,7 +93,7 @@ if(SONY2FUJI_ENABLE_GPU AND APPLE)
     target_link_libraries(sony2fuji_core "-framework Metal" "-framework Foundation")
 endif()
 if(SONY2FUJI_ENABLE_GPU AND ANDROID)
-    target_link_libraries(sony2fuji_core EGL GLESv3)
+    target_link_libraries(sony2fuji_core EGL GLESv3 log)
 endif()
 
 # 创建共享库 (用于移动端集成)
@@ -107,7 +111,7 @@ if(BUILD_SHARED_LIB)
         target_link_libraries(sony2fuji "-framework Metal" "-framework Foundation")
     endif()
     if(SONY2FUJI_ENABLE_GPU AND ANDROID)
-        target_link_libraries(sony2fuji EGL GLESv3)
+        target_link_libraries(sony2fuji EGL GLESv3 log)
     endif()
 
     # iOS/Android 特定配置

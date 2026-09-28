@@ -1,8 +1,8 @@
 # Android 集成指南 / Android Integration
 
-通过 NDK/JNI 调用 Sony2Fuji 共享 C API。此目录目前只有集成文档，Kotlin/JNI 代码需要宿主应用提供；不是已经打包发布的 Android SDK。
+通过 NDK/JNI 调用 Sony2Fuji 共享 C API。可构建的 Kotlin/Compose 客户端位于 [RawLabAndroid](../../../RawLabAndroid/README.md)，包含相册权限、JNI、源代码构建依赖和设备测试。本目录保留第三方宿主集成说明，不是独立发布的 Android SDK。
 
-Call the shared Sony2Fuji C API through NDK/JNI. This directory currently contains documentation only; the host app must provide Kotlin/JNI code. It is not a packaged Android SDK.
+Call the shared Sony2Fuji C API through NDK/JNI. The buildable [RawLabAndroid client](../../../RawLabAndroid/README.md) includes album permissions, JNI, source-built dependencies and device tests. This directory remains a third-party integration guide, not a separately published Android SDK.
 
 旧文档的静态全局 C++ 封装未完整实现当前 F-Log2 照片管线，且 Activity 销毁不会自动释放全局对象。以下使用共享 API 和显式会话所有权说明集成方式。
 
@@ -137,9 +137,13 @@ Serialize render, configuration and close calls on the same instance. Do not sha
 
 ## 4. GPU 与生命周期 / GPU and Lifecycle
 
-Android LUT 后端需要 OpenGL ES 3.1。Auto 在不可用时回退 CPU；Force 会报告处理失败。不要把 Apple Metal 的整条照片管线加速能力当成 Android 已具备的功能。
+Android 照片后端需要 OpenGL ES 3.1，支持缩放、曝光/色彩转换、中性映射、F-Log2、LUT/强度和逐像素明暗处理。Auto 在不可用时回退 CPU；Force 会报告处理失败。RAW 解码及文件编码仍在 CPU；邻域锐化/降噪目前不走 GLES。
 
-The Android LUT backend requires OpenGL ES 3.1. Auto falls back to CPU when unavailable; Force reports processing failure. Do not assume Android has the entire photo-pipeline acceleration provided by Apple Metal.
+The Android photo backend requires OpenGL ES 3.1 and accelerates resizing, exposure/matrices, neutral mapping, F-Log2, LUT/blending and pointwise tone. Auto falls back to CPU; Force fails when unavailable. RAW decoding/file encoding and neighborhood sharpening/denoise are not GLES-accelerated.
+
+会话拥有 EGL context、缓冲及单张线性预览缓存。全尺寸图像按设备限制分块上传；预览缓存按实际 RAW 解码修订号失效，不能供导出使用。`sony2fuji_session_get_last_backend` 返回新增的 `SONY2FUJI_BACKEND_GLES` 时，才证明本次完整像素请求在 GLES 上完成。旧的通用 LUT 函数不使用此照片缓存。
+
+Sessions own their EGL context, buffers and one linear preview cache. Full-size images stream in bounded bands. The preview cache is keyed by the actual RAW decode revision and never supplies exports. `SONY2FUJI_BACKEND_GLES` from `sony2fuji_session_get_last_backend` confirms the photo request used GLES. The legacy generic LUT function does not use this photo cache.
 
 在已创建 session 上设置：
 
@@ -190,9 +194,9 @@ withContext(Dispatchers.Default) {
 adb logcat | grep Sony2Fuji
 ```
 
-按你的项目启用 Android Studio native debugging。至少在实际目标设备上验证 RAW 加载、GPU 回退、取消/关闭、内存和导出；本次文档更新未运行 Android 构建或设备测试。
+按你的项目启用 Android Studio native debugging。至少在实际目标设备上验证 RAW 加载、GPU 回退、取消/关闭、内存和导出；当前客户端真机结果见 [GPU 验证记录](../../../RawLabAndroid/gpu-verification.md)。
 
-Enable Android Studio native debugging for your project. Validate RAW loading, GPU fallback, cancellation/close behavior, memory and export on actual target devices. No Android build or device tests were run for this documentation update.
+Enable Android Studio native debugging for your project. Validate RAW loading, GPU fallback, cancellation/close behavior, memory and export on actual target devices. See the current client's [device evidence](../../../RawLabAndroid/gpu-verification.md).
 
 更多构建和数值约定见[核心 README](../../README.md)与[平台集成说明](../../docs/platform-integration.md)。
 

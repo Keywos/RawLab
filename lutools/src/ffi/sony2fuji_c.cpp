@@ -3,6 +3,9 @@
 #include "sony2fuji/sony2fuji.h"
 #include "core/photo_rendering.h"
 #include "gpu/image_stats.h"
+#if defined(SONY2FUJI_ENABLE_GLES)
+#include "gpu/gles_photo.h"
+#endif
 #if defined(SONY2FUJI_ENABLE_METAL)
 #include "gpu/photo_gpu.h"
 #endif
@@ -34,6 +37,10 @@ struct sony2fuji_session {
     std::string processor_key;
     bool interactive_preview = false;
     sony2fuji_render_backend last_backend = SONY2FUJI_BACKEND_CPU;
+#if defined(SONY2FUJI_ENABLE_GLES)
+    std::unique_ptr<sony2fuji::GlesPhotoRenderer> gles_renderer;
+    uint64_t raw_revision = 0;
+#endif
 };
 
 namespace {
@@ -722,6 +729,9 @@ sony2fuji_status loadRawImage(
             return mapError(result);
         }
         session->raw_cache = std::move(decoded);
+#if defined(SONY2FUJI_ENABLE_GLES)
+        ++session->raw_revision;
+#endif
         session->raw_key = key;
         session->baseline_ev = anchoredPreview ? session->preview_camera_ev : processor.getBaselineExposureEV();
         session->metadata_ev = processor.getMetadataExposureEV();
@@ -894,6 +904,9 @@ sony2fuji_status sony2fuji_session_set_gpu_config(
         return status;
     }
     session->gpu_config.mode = toCoreGpuMode(config->mode);
+#if defined(SONY2FUJI_ENABLE_GLES)
+    if (session->gpu_config.mode == sony2fuji::GpuMode::Off) session->gles_renderer.reset();
+#endif
     return SONY2FUJI_STATUS_OK;
 }
 
@@ -948,7 +961,7 @@ static sony2fuji_status processImpl(
     sony2fuji_request local = *request;
     local.lut_strength = clampFloat(local.lut_strength, 0.0f, 2.0f);
     session->last_backend = SONY2FUJI_BACKEND_CPU;
-#if defined(SONY2FUJI_ENABLE_METAL)
+#if defined(SONY2FUJI_ENABLE_METAL) || defined(SONY2FUJI_ENABLE_GLES)
     const bool gpuPipeline = session->gpu_config.mode != sony2fuji::GpuMode::Off;
 #else
     const bool gpuPipeline = false;
@@ -1003,6 +1016,25 @@ static sony2fuji_status processImpl(
         }
         if (session->gpu_config.mode == sony2fuji::GpuMode::Force) return SONY2FUJI_STATUS_PROCESSING_ERROR;
         if (local.input_type == SONY2FUJI_INPUT_RAW) image = session->raw_cache;
+    }
+#endif
+#if defined(SONY2FUJI_ENABLE_GLES)
+    if (gpuPipeline) {
+        uint32_t width, height;
+        status = computeTargetSize(local, image.width, image.height, &width, &height);
+        if (status != SONY2FUJI_STATUS_OK) return status;
+        if (!session->gles_renderer) session->gles_renderer = std::make_unique<sony2fuji::GlesPhotoRenderer>();
+        const bool raw = local.input_type == SONY2FUJI_INPUT_RAW;
+        const auto& source = raw ? session->raw_cache : image;
+        sony2fuji::ImageData rendered;
+        if (session->gles_renderer->render(source, toCoreColorSpace(color_space), local, lut, wb,
+                width, height, raw ? session->raw_revision : 0, rendered)) {
+            session->last_backend = SONY2FUJI_BACKEND_GLES;
+            if (local.output_target == SONY2FUJI_TARGET_FILE) return writeOutputFile(local, rendered);
+            return writeOutputBuffer(local, rendered, out_buffer);
+        }
+        if (session->gpu_config.mode == sony2fuji::GpuMode::Force) return SONY2FUJI_STATUS_PROCESSING_ERROR;
+        if (raw) image = session->raw_cache;
     }
 #endif
     // A pixel-radius filter must run at source resolution for preview/export parity.

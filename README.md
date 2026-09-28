@@ -1,8 +1,8 @@
 # RawLab
 
-跨品牌 RAW 显影与富士胶片 LUT 工具，包含共享 C++ 处理核心、命令行工具和原生 Mac 客户端。
+跨品牌 RAW 显影与富士胶片 LUT 工具，包含共享 C++ 处理核心、命令行工具和原生 Mac / Android 客户端。
 
-Cross-brand RAW development and Fujifilm film LUT tools, with a shared C++ processing core, command-line tools and a native Mac editor.
+Cross-brand RAW development and Fujifilm film LUT tools, with a shared C++ processing core, command-line tools and native Mac / Android editors.
 
 ## 功能预览 / Preview
 
@@ -20,8 +20,15 @@ RawLab Mac provides side-by-side neutral/film comparison, LUT selection, exposur
 
 Requires Apple Silicon (arm64) and macOS 26 or later. The app is ad-hoc signed and has not been notarized by Apple.
 
+[下载 RawLab Android v0.1.0 / Download Android v0.1.0](https://github.com/dancancer/RawLab/releases/tag/android-v0.1.0)
+
+支持 Android 8.0+，提供 ARM64 / x86_64 通用签名 APK；GLES 不可用时自动回退 CPU。
+
+Requires Android 8.0+. The signed APK includes ARM64 / x86_64 and falls back to CPU when GLES is unavailable.
+
 ## 文档 / Documentation
 
+- [Android 客户端：相册权限、构建与验证 / Android editor: album access, build and verification](RawLabAndroid/README.md)
 - [Mac 客户端：构建、使用与验证 / Mac editor: build, use and verification](RawLabMac/README.md)
 - [处理核心与命令行工具 / Processing core and CLI](lutools/README.md)
 - [RAW、色彩空间与 LUT 处理约定 / RAW, color-space and LUT contract](lutools/docs/color-contract.md)
