@@ -2,6 +2,9 @@
 #include "sony2fuji/ffi/sony2fuji_c.h"
 #include "sony2fuji/lut_parser.h"
 #include "gpu/photo_gpu.h"
+#ifdef SONY2FUJI_ENABLE_D3D11
+#include "gpu/d3d11_photo.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -12,7 +15,12 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#ifdef _WIN32
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
+#endif
 #include <vector>
 
 namespace {
@@ -153,6 +161,11 @@ bool compareCase(
 
     const auto input = toLinearImage(pixels, width, height);
     sony2fuji::ImageData gpu;
+#ifdef SONY2FUJI_ENABLE_D3D11
+    static sony2fuji::D3D11PhotoRenderer renderer;
+    const bool gpuStatus = renderer.render(input, sony2fuji::ColorSpace::sRGB,
+        request, lut, sony2fuji::RGB(1,1,1), targetWidth, targetHeight, 0, gpu);
+#else
     const bool gpuStatus = sony2fuji::renderPhotoMetal(
         input,
         sony2fuji::ColorSpace::sRGB,
@@ -163,6 +176,7 @@ bool compareCase(
         targetHeight,
         gpu
     );
+#endif
 
     bool result = cpuStatus == SONY2FUJI_STATUS_OK && gpuStatus;
     size_t maximum = 0;
@@ -186,6 +200,7 @@ int main() {
     }
 
     const auto lutPath = makePhotoLUT();
+    const auto lutUtf8 = lutPath.u8string();
     auto lut = std::shared_ptr<sony2fuji::LUT3D>(
         sony2fuji::LUTParser::loadLUT(lutPath.string())
     );
@@ -206,7 +221,7 @@ int main() {
     const float strengths[] = {0.0f, 0.5f, 1.0f, 2.0f};
     for (float strength : strengths) {
         auto request = baseline;
-        request.lut_path = lutPath.c_str();
+        request.lut_path = lutUtf8.c_str();
         request.lut_strength = strength;
         request.exposure_ev = 0.35f;
         request.brightness = 1.1f;
@@ -252,7 +267,7 @@ int main() {
     auto borderRequest = baseRequest(oneByN, 1, 4);
     borderRequest.sharpening = 1.0f;
     borderRequest.noise_reduction = 0.6f;
-    borderRequest.lut_path = lutPath.c_str();
+    borderRequest.lut_path = lutUtf8.c_str();
     borderRequest.lut_strength = 1.0f;
     compareCase(session, oneByN, 1, 4, borderRequest, lut, 1, 4, "3x3 borders on 1xN input");
 
@@ -261,7 +276,7 @@ int main() {
     previewRequest.preview_long_edge = 2;
     previewRequest.target_width = 2;
     previewRequest.target_height = 1;
-    previewRequest.lut_path = lutPath.c_str();
+    previewRequest.lut_path = lutUtf8.c_str();
     previewRequest.lut_strength = 0.5f;
     previewRequest.noise_reduction = 0.3f;
     compareCase(session, pixels, 4, 2, previewRequest, lut, 2, 1, "preview resize precedes effects");

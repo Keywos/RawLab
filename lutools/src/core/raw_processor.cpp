@@ -3,6 +3,7 @@
 #include "preview_exposure.h"
 #include "photo_rendering.h"
 #include "white_balance.h"
+#include "file_path.h"
 #include <libraw/libraw.h>
 #include <algorithm>
 #include <cmath>
@@ -14,6 +15,9 @@
 #include <zlib.h>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#ifdef _WIN32
+#define STBIW_WINDOWS_UTF8
+#endif
 #include "stb_image_write.h"
 
 #ifdef _OPENMP
@@ -249,11 +253,15 @@ private:
     }
 
     int openAndUnpack(bool cameraWB, bool autoWB) {
+        // open_file replaces LibRaw's datastream ownership flag before opening.
+        // Explicitly close the previous stream first (Windows otherwise leaks a
+        // file handle on camera/custom WB mode switches).
+        rawProcessor_->recycle();
         auto& params = rawProcessor_->imgdata.params;
         params.use_camera_matrix = 1;
         params.use_camera_wb = cameraWB ? 1 : 0;
         params.use_auto_wb = autoWB ? 1 : 0;
-        const int openResult = rawProcessor_->open_file(filepath_.c_str());
+        const int openResult = openRawFile(*rawProcessor_, filepath_);
         if (openResult != LIBRAW_SUCCESS) return openResult;
         const int unpackResult = rawProcessor_->unpack();
         if (unpackResult != LIBRAW_SUCCESS) return unpackResult;
@@ -444,7 +452,7 @@ ErrorCode ImageEncoder::savePNG(const ImageData& image, const std::string& filep
     if (image.width <= 0 || image.height <= 0 ||
         image.pixels.size() != static_cast<size_t>(image.width) * image.height)
         return ErrorCode::ProcessingError;
-    std::ofstream file(filepath, std::ios::binary);
+    std::ofstream file(std::filesystem::u8path(filepath), std::ios::binary);
     if (!file) return ErrorCode::ProcessingError;
     auto write32 = [&](uint32_t value) {
         unsigned char bytes[] = {static_cast<unsigned char>(value>>24),

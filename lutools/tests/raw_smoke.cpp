@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
 #define STBI_NO_STDIO
@@ -63,7 +64,8 @@ void saveProof(const ImageData& image, const std::filesystem::path& path, bool s
 
 int main(int argc, char** argv) {
     if (argc != 2 && argc != 4) return 2;
-    LibRaw metadata;
+    auto metadataOwner = std::make_unique<LibRaw>();
+    auto& metadata = *metadataOwner;
     metadata.imgdata.params.use_camera_wb=1;
     metadata.imgdata.params.use_camera_matrix=1;
     metadata.open_file(argv[1]);
@@ -81,7 +83,8 @@ int main(int argc, char** argv) {
         std::cerr << "Default RAW exposure is not metadata-based\n"; return 1;
     }
     {
-        LibRaw reference;
+        auto referenceOwner = std::make_unique<LibRaw>();
+        auto& reference = *referenceOwner;
         auto& p=reference.imgdata.params;
         p.use_camera_wb=1; p.use_camera_matrix=1; p.output_color=0;
         p.no_auto_bright=1; p.no_auto_scale=0; p.adjust_maximum_thr=0; p.highlight=2;

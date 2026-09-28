@@ -1,8 +1,8 @@
 # RawLab
 
-跨品牌 RAW 显影与富士胶片 LUT 工具，包含共享 C++ 处理核心、命令行工具和原生 Mac / Android 客户端。
+跨品牌 RAW 显影与富士胶片 LUT 工具，包含共享 C++ 处理核心、命令行工具和原生 Windows / Mac / Android 客户端。
 
-Cross-brand RAW development and Fujifilm film LUT tools, with a shared C++ processing core, command-line tools and native Mac / Android editors.
+Cross-brand RAW development and Fujifilm film LUT tools, with a shared C++ processing core, command-line tools and native Windows / Mac / Android editors.
 
 ## 功能预览 / Preview
 
@@ -13,6 +13,12 @@ RawLab Mac 支持中性与胶片效果并排对比、胶片 LUT 切换、曝光�
 RawLab Mac provides side-by-side neutral/film comparison, LUT selection, exposure and white-balance adjustments, and full-resolution export. The screenshot shows the neutral render on the left and Velvia on the right.
 
 ## 下载 / Download
+
+[下载 RawLab Windows v0.1.0 / Download Windows v0.1.0](https://github.com/dancancer/RawLab/releases/tag/windows-v0.1.0)
+
+支持 Windows 10/11 x64。解压后运行 `RawLab.exe`；独立运行包包含 .NET 运行时，默认 Direct3D 11 硬件加速，可自动回退 CPU。
+
+Requires Windows 10/11 x64. Extract the ZIP and run `RawLab.exe`. The package includes the .NET runtime and supports Direct3D 11 acceleration with CPU fallback.
 
 [下载 RawLab Mac v0.1 / Download v0.1](https://github.com/dancancer/RawLab/releases/tag/v0.1)
 
@@ -28,7 +34,14 @@ Requires Android 8.0+. The signed APK includes ARM64 / x86_64 and falls back to 
 
 ## 文档 / Documentation
 
+- [Windows 客户端：原生 WPF、Direct3D 11 加速、构建与验证 / Windows editor](RawLabWindows/README.md)
 - [Android 客户端：相册权限、构建与验证 / Android editor: album access, build and verification](RawLabAndroid/README.md)
 - [Mac 客户端：构建、使用与验证 / Mac editor: build, use and verification](RawLabMac/README.md)
 - [处理核心与命令行工具 / Processing core and CLI](lutools/README.md)
 - [RAW、色彩空间与 LUT 处理约定 / RAW, color-space and LUT contract](lutools/docs/color-contract.md)
+
+## 开源协议 / License
+
+项目原创代码采用 [MIT License](LICENSE)。第三方库、LUT 及其他附带资源遵循各自许可证与版权声明；详见各客户端的第三方说明。
+
+Original project code is licensed under the [MIT License](LICENSE). Third-party libraries, LUTs and other bundled assets retain their respective licenses and copyright notices.

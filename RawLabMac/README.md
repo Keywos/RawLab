@@ -111,6 +111,9 @@ The flat app icon uses overlapping yellow/cyan frames on charcoal to suggest the
 
 ## 验证 / Verification
 
+RAW 样片不再随仓库分发。运行真实 RAW 测试前设置 `RAWLAB_TEST_RAW=/path/to/sample.ARW`；
+独立 CMake 构建使用 `-DSONY2FUJI_TEST_RAW=/path/to/sample.ARW`。下面的历史报告可能引用已删除的旧样片。
+
 验证文档中的 `/tmp` 和 `.impeccable/review` 路径记录本机产物，不随 Git 发布；本地 RAW 样片也不随本次提交上传。缺少可选样片时，CMake 会跳过对应测试。
 
 Paths under `/tmp` and `.impeccable/review` in verification reports refer to local artifacts, not published Git files. Local RAW fixtures are also excluded from the release commit. CMake omits tests whose optional fixtures are absent.

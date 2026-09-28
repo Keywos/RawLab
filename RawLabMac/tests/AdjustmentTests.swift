@@ -52,8 +52,10 @@ struct AdjustmentTests {
         let root=URL(fileURLWithPath: CommandLine.arguments[1])
         let output=URL(fileURLWithPath: CommandLine.arguments[2])
         try FileManager.default.createDirectory(at: output,withIntermediateDirectories: true)
-        let raw=CommandLine.arguments.count>3 ? URL(fileURLWithPath: CommandLine.arguments[3]) :
-            root.appendingPathComponent("RawLab/RawLab/Resources/Samples/DSC09067.ARW")
+        guard CommandLine.arguments.count > 3 else {
+            throw RenderError.failed("Pass an external RAW fixture path")
+        }
+        let raw=URL(fileURLWithPath: CommandLine.arguments[3])
         print("RAW: \(raw.lastPathComponent)")
         let lut=root.appendingPathComponent("lutools/flog-2-new/FLog2_to_PROVIA_65grid_V.1.00.cube")
         let engine=try RenderEngine()

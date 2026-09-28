@@ -35,7 +35,7 @@ class EditorScreenTest {
     @Test fun importedPhotoSurvivesRotationAndFailedImport() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val source = File(instrumentation.targetContext.cacheDir, "editor-test.ARW")
-        instrumentation.context.assets.open("DSC09067.ARW").use { from -> source.outputStream().use { from.copyTo(it) } }
+        instrumentation.context.assets.open("sample.RAW").use { from -> source.outputStream().use { from.copyTo(it) } }
         var model = compose.activity.model
         compose.runOnUiThread { model.importPhoto(Uri.fromFile(source)) }
         compose.waitUntil(180_000) { model.state.value.canExport || model.state.value.error != null }

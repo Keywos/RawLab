@@ -11,8 +11,18 @@
 #include <zlib.h>
 #include <limits>
 #include <array>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#undef near
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
 #include <pthread.h>
+#endif
 
 using namespace sony2fuji;
 int failures = 0;
@@ -43,7 +53,17 @@ sony2fuji_request request(const unsigned char* pixels) {
 }
 
 int main() {
-    const std::string thumbnailRaw=std::string(TEST_SOURCE_DIR)+"/../RawLab/RawLab/Resources/Samples/DSC09067.ARW";
+    std::cout << std::unitbuf;
+    const std::string thumbnailRaw=TEST_RAW_PATH;
+    if (!thumbnailRaw.empty()) {
+#ifdef _WIN32
+    HANDLE worker = CreateThread(nullptr, 512*1024, [](LPVOID path)->DWORD {
+        return loadPreviewLuminance(static_cast<const char*>(path)).empty() ? 1 : 0;
+    }, const_cast<char*>(thumbnailRaw.c_str()), STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+    DWORD result = 1;
+    if (worker) { WaitForSingleObject(worker, INFINITE); GetExitCodeThread(worker, &result); CloseHandle(worker); }
+    check(worker && result == 0,"Preview decode fits a desktop worker thread stack");
+#else
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr,512*1024);
@@ -55,6 +75,8 @@ int main() {
     void* result=nullptr;
     if (!started) pthread_join(worker,&result);
     check(!started && !result,"Preview decode fits a desktop worker thread stack");
+#endif
+    } else std::cout << "SKIP worker thumbnail (set SONY2FUJI_TEST_RAW)\n";
     check(!RAWProcessOptions().matchEmbeddedPreviewExposure, "Default exposure does not meter the embedded JPEG");
     check(near(sceneExposureEV(.35f),1.05f) && near(sceneExposureEV(-.5f),.2f) &&
         near(sceneExposureEV(-999),.7f), "DNG baseline offsets are independent of scene content");
@@ -116,6 +138,7 @@ int main() {
     check(ImageEncoder::savePNG(red,png.string()) == ErrorCode::Success, "PNG writes");
     std::ifstream pf(png,std::ios::binary);
     std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(pf)),{});
+    pf.close(); // Windows cannot remove the temporary directory while this file is open.
     check(bytes.size()>25 && bytes[24]==16, "PNG IHDR declares sixteen bits");
     auto read32 = [&](size_t offset) { return (uint32_t(bytes[offset])<<24) |
         (uint32_t(bytes[offset+1])<<16) | (uint32_t(bytes[offset+2])<<8) | bytes[offset+3]; };

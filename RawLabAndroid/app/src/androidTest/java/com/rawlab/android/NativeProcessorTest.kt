@@ -14,7 +14,7 @@ class NativeProcessorTest {
     @Test fun whiteBalancePreviewLatency() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val input = File(instrumentation.targetContext.cacheDir, "wb-latency-test.arw")
-        instrumentation.context.assets.open("DSC09067.ARW").use { from -> input.outputStream().use { from.copyTo(it) } }
+        instrumentation.context.assets.open("sample.RAW").use { from -> input.outputStream().use { from.copyTo(it) } }
         val budget = InstrumentationRegistry.getArguments().getString("wbPreviewBudgetMs")?.toLong()
         val changed = mutableListOf<Long>()
         val report = StringBuilder()
@@ -52,7 +52,7 @@ class NativeProcessorTest {
     @Test fun gpuCanBeDisabledAndRestoredWithoutLosingSession() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val input = File(instrumentation.targetContext.cacheDir, "gpu-mode-test.arw")
-        instrumentation.context.assets.open("DSC09067.ARW").use { from -> input.outputStream().use { from.copyTo(it) } }
+        instrumentation.context.assets.open("sample.RAW").use { from -> input.outputStream().use { from.copyTo(it) } }
         try {
             NativeProcessor(NativeProcessor.FORCE).use { processor ->
                 assertEquals(2, processor.preview(input, null, EditSettings(), 400, false).backend)
@@ -67,7 +67,7 @@ class NativeProcessorTest {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val input = File(context.cacheDir, "native-test.arw")
-        instrumentation.context.assets.open("DSC09067.ARW").use { from -> input.outputStream().use { from.copyTo(it) } }
+        instrumentation.context.assets.open("sample.RAW").use { from -> input.outputStream().use { from.copyTo(it) } }
         try {
             NativeProcessor().use { processor ->
                 val storage = PhotoStorage(context)
@@ -88,15 +88,16 @@ class NativeProcessorTest {
                 java.io.DataInputStream(out.inputStream()).use { it.readFully(header) }
                 assertEquals(16, header[24].toInt())
                 fun intAt(i: Int) = java.nio.ByteBuffer.wrap(header, i, 4).int
-                assertEquals(7008, intAt(16))
-                assertEquals(4672, intAt(20))
+                val nativeWidth = intAt(16)
+                val nativeHeight = intAt(20)
+                assertTrue(nativeWidth > neutral.width && nativeHeight > neutral.height)
                 out.delete()
                 val jpeg = File(context.cacheDir, "native-export.jpg")
                 processor.export(input, null, EditSettings(), jpeg, false)
                 val dimensions = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 android.graphics.BitmapFactory.decodeFile(jpeg.path, dimensions)
-                assertEquals(7008, dimensions.outWidth)
-                assertEquals(4672, dimensions.outHeight)
+                assertEquals(nativeWidth, dimensions.outWidth)
+                assertEquals(nativeHeight, dimensions.outHeight)
                 jpeg.delete()
                 assertThrows(Exception::class.java) { processor.preview(File(context.cacheDir, "missing.dng"), null, EditSettings(), 400, false) }
             }
