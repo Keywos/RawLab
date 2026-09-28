@@ -14,6 +14,8 @@ list(FILTER LIBRAW_SOURCES EXCLUDE REGEX "_ph\\.cpp$")
 add_library(raw SHARED ${LIBRAW_SOURCES})
 target_include_directories(raw PUBLIC "${libraw_SOURCE_DIR}")
 target_compile_definitions(raw PRIVATE USE_ZLIB)
+# Keep RAW development responsive in the device-debug build, like sony2fuji_core.
+target_compile_options(raw PRIVATE $<$<CONFIG:Debug>:-O3>)
 target_link_libraries(raw PRIVATE z)
 target_link_options(raw PRIVATE "-Wl,-z,max-page-size=16384")
 

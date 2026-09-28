@@ -10,8 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 enum class Operation { NONE, IMPORT, PICK_EXPORT, EXPORT }
-data class PreviewPair(val neutral: Bitmap, val result: Bitmap, val temperature: Float, val tint: Float,
-    val backend: Int = 0, val elapsedMs: Long = 0)
+data class PreviewPair(val neutral: Bitmap, val result: Bitmap, val temperature: Float, val tint: Float)
 data class EditorState(
     val photo: ImportedPhoto? = null,
     val edits: EditSettings = EditSettings(),
@@ -60,7 +59,6 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
             catch (error: Throwable) { photo.file.delete(); throw error }
         }
         is Work.Preview -> {
-            val started = System.nanoTime()
             val edge = if (work.interactive) 1000 else 1600
             val native = engine()
             native.setGpuMode(work.gpuMode)
@@ -70,8 +68,7 @@ class EditorViewModel(application: Application) : AndroidViewModel(application) 
                 else native.preview(work.photo.file, lut, work.edits, edge, work.interactive)
             val neutralBitmap = neutral.bitmap()
             WorkResult.Preview(work, PreviewPair(neutralBitmap,
-                if (neutral === film) neutralBitmap else film.bitmap(), neutral.temperature, neutral.tint,
-                if (neutral.backend == 2 && film.backend == 2) 2 else 0, (System.nanoTime() - started) / 1_000_000))
+                if (neutral === film) neutralBitmap else film.bitmap(), neutral.temperature, neutral.tint))
         }
         is Work.Export -> {
             val output = storage.temporaryOutput(work.png)

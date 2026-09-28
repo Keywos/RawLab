@@ -10,7 +10,10 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.test.platform.app.InstrumentationRegistry
 import android.net.Uri
@@ -38,6 +41,9 @@ class EditorScreenTest {
         compose.waitUntil(180_000) { model.state.value.canExport || model.state.value.error != null }
         assertNull(model.state.value.error)
         assertTrue(model.state.value.canExport)
+        compose.onNode(SemanticsMatcher("render timing label") { node ->
+            node.config.getOrNull(SemanticsProperties.Text)?.any { Regex("(?:GPU|CPU).*ms").matches(it.text) } == true
+        }).assertDoesNotExist()
         val original = model.state.value.photo
         compose.runOnUiThread { model.edit(model.state.value.edits.copy(film = "velvia", exposure = .5f)) }
         compose.activityRule.scenario.recreate()

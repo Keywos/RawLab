@@ -18,8 +18,9 @@ about every Android GPU or the performance of RAW decoding.
 - RAW unpacking, camera WB/demosaic and JPEG/PNG encoding remain CPU work.
   Neighborhood sharpening/denoise (not exposed by this editor) use CPU in
   Auto; Force fails rather than pretending that a GPU render succeeded.
-- The app defaults to Auto, permits CPU selection, and reports the completed
-  backend and paired-preview time. `SONY2FUJI_BACKEND_GLES` was asserted in
+- The app defaults to Auto and permits CPU selection. The initial canvas
+  backend/timing badge was removed in the white-balance follow-up below.
+  Native backend diagnostics remain available. `SONY2FUJI_BACKEND_GLES` was asserted in
   native tests, including neutral and full-resolution file requests.
 
 ## Measurements
@@ -41,7 +42,54 @@ statistical performance guarantee. An earlier complete GPU PNG call with a
 fresh camera-WB decode took 16.68 s; do not compare that to a warm export or
 claim RAW decoding became 6.48x faster. The UI's displayed time includes both
 neutral/result work, asset preparation and bitmap copies, so it differs from
-the single-render benchmark.
+the single-render benchmark. That UI timing badge is no longer displayed.
+
+## White-Balance Follow-Up
+
+The connected-device Debug APK originally compiled `sony2fuji_core` with `-O3`
+but compiled the separate LibRaw target without optimization. Debug LibRaw now
+also uses `-O3`; Release flags, WB-before-demosaic order, highlight handling,
+interactive half-size policy and exact export processing are unchanged.
+
+The `NativeProcessorTest.whiteBalancePreviewLatency` reproduction uses the same
+Sony fixture and a paired neutral/Velvia render, with changing temperature and
+tint 12. Interactive requests use 1000px, initial/exact requests use 1600px.
+Times below include both native calls and JNI pixel copies, not Compose drawing
+or Bitmap construction. These are single paired sequences, not a device-wide
+performance guarantee.
+
+| Operation | Before (ms) | Optimized Debug (ms) |
+| --- | ---: | ---: |
+| Initial camera-WB preview | 12460 | 2366 |
+| First custom WB, 4200 K | 2590 | 707 |
+| Next custom WB, 5200 K | 1011 | 291 |
+| Next custom WB, 7200 K | 1012 | 273 |
+| Exact 7200 K after dragging | 10983 | 1661 |
+
+Repeating unchanged interactive settings took 8-9 ms before and 8 ms after.
+This isolates the expensive changed-WB CPU processing from the cached GPU pixel
+stage. The first custom WB also changes LibRaw's identification mode and reloads
+the unpacked source. Changing temperature/tint still requires CPU RAW processing;
+no GPU RAW decoder or approximate post-demosaic WB replacement was added.
+
+The opt-in 1000 ms interactive budget failed on the original APK and passed on
+the optimized APK. Run on this device with:
+
+```sh
+adb -s "$ANDROID_SERIAL" shell am instrument -w \
+  -e class 'com.rawlab.android.NativeProcessorTest#whiteBalancePreviewLatency' \
+  -e wbPreviewBudgetMs 1000 \
+  com.rawlab.android.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+The budget is optional so slower devices are not assigned this tablet's limit.
+The final installed APK passed all 8 instrumentation tests in 29.168 s, including
+the no-timing-badge UI regression, RAW exports and GPU mode switching. JVM tests
+passed 8/8; dual-ABI builds and all 8 packaged native library alignment checks
+passed; lint reported 0 errors and 12 warnings. No shared core source changed in
+this follow-up, so desktop/Metal results below remain the earlier GPU baseline.
+Local evidence: `app/build/verification/wb-latency-before.txt`,
+`wb-latency-after.txt` and `portrait-no-timing-badge.png`.
 
 ## Correctness and Lifecycle
 

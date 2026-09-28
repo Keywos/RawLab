@@ -20,6 +20,12 @@ RawLab Mac provides side-by-side neutral/film comparison, LUT selection, exposur
 
 Requires Apple Silicon (arm64) and macOS 26 or later. The app is ad-hoc signed and has not been notarized by Apple.
 
+[下载 RawLab Android v0.1.0 / Download Android v0.1.0](https://github.com/dancancer/RawLab/releases/tag/android-v0.1.0)
+
+支持 Android 8.0+，提供 ARM64 / x86_64 通用签名 APK；GLES 不可用时自动回退 CPU。
+
+Requires Android 8.0+. The signed APK includes ARM64 / x86_64 and falls back to CPU when GLES is unavailable.
+
 ## 文档 / Documentation
 
 - [Android 客户端：相册权限、构建与验证 / Android editor: album access, build and verification](RawLabAndroid/README.md)

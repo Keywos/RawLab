@@ -6,9 +6,49 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import android.os.SystemClock
+import android.os.Bundle
 
 @RunWith(AndroidJUnit4::class)
 class NativeProcessorTest {
+    @Test fun whiteBalancePreviewLatency() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val input = File(instrumentation.targetContext.cacheDir, "wb-latency-test.arw")
+        instrumentation.context.assets.open("DSC09067.ARW").use { from -> input.outputStream().use { from.copyTo(it) } }
+        val budget = InstrumentationRegistry.getArguments().getString("wbPreviewBudgetMs")?.toLong()
+        val changed = mutableListOf<Long>()
+        val report = StringBuilder()
+        try {
+            NativeProcessor(NativeProcessor.FORCE).use { processor ->
+                val lut = PhotoStorage(instrumentation.targetContext).filmPath("velvia")
+                fun measure(label: String, settings: EditSettings, interactive: Boolean): Long {
+                    val started = SystemClock.elapsedRealtime()
+                    val edge = if (interactive) 1000 else 1600
+                    val neutral = processor.preview(input, null, settings, edge, interactive)
+                    val film = processor.preview(input, lut, settings, edge, interactive)
+                    assertEquals(2, neutral.backend)
+                    assertEquals(2, film.backend)
+                    val elapsed = SystemClock.elapsedRealtime() - started
+                    val line = "$label ms=$elapsed\n"
+                    report.append(line)
+                    instrumentation.sendStatus(2, Bundle().apply { putString("stream", line) })
+                    return elapsed
+                }
+                measure("initial camera WB", EditSettings(), false)
+                for (temperature in listOf(4200f, 5200f, 7200f)) {
+                    val settings = EditSettings(customWb = true, temperature = temperature, tint = 12f)
+                    changed += measure("changed WB $temperature", settings, true)
+                    measure("cached WB $temperature", settings, true)
+                }
+                measure("exact WB after drag", EditSettings(customWb = true, temperature = 7200f, tint = 12f), false)
+            }
+            if (budget != null) assertTrue("Changed WB paired previews $changed must each finish within $budget ms", changed.all { it <= budget })
+        } finally {
+            File(instrumentation.targetContext.getExternalFilesDir(null), "wb-latency.txt").writeText(report.toString())
+            input.delete()
+        }
+    }
+
     @Test fun gpuCanBeDisabledAndRestoredWithoutLosingSession() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val input = File(instrumentation.targetContext.cacheDir, "gpu-mode-test.arw")

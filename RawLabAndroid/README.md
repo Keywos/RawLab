@@ -14,8 +14,8 @@ Native Kotlin / Jetpack Compose RAW editor using the shared C++ pipeline through
   Ten film looks, neutral/result comparison, strength, exposure and calibrated RAW white balance.
 - 1000px 交互预览、1600px 精确预览；串行渲染只保留最新待处理调整。旋转屏幕保留当前编辑。
   Bounded interactive/exact previews with serialized latest-request scheduling and rotation-safe state.
-- 默认启用 GLES 像素加速，失败自动回退 CPU；更多菜单可关闭。画布角标显示实际后端和已完成的渲染耗时。
-  GLES pixel acceleration defaults to Auto with CPU fallback; the menu can disable it. The canvas reports the actual completed backend/time.
+- 默认启用 GLES 像素加速，失败自动回退 CPU；更多菜单可关闭。画布只显示处理进度，不显示后端和耗时角标。
+  GLES pixel acceleration defaults to Auto with CPU fallback; the menu can disable it. The canvas shows processing progress without backend/timing badges.
 - 竖屏采用单画面滑动对比、可收起底栏、固定底部工具行；色温与色调分别调整，无需滚动整个工具栏。
   Portrait uses a full-size before/after wipe, collapsible controls, a fixed bottom tool row, and separate temperature/tint tools.
 - 原尺寸 JPEG (quality 95) / 16-bit PNG。Android 10+ 可直接保存到相册；所有支持版本均可保存到文件。
@@ -60,6 +60,34 @@ The wrapper verifies its download. LibRaw 0.21.5 is source-pinned and checksum-v
 then built per ABI with the NDK. No host LibRaw or prebuilt `.so` is required.
 Assets are generated from existing repository resources rather than duplicated in Git.
 
+## Release
+
+[下载 Android v0.1.0 / Download Android v0.1.0](https://github.com/dancancer/RawLab/releases/tag/android-v0.1.0)
+
+正式 APK 使用专用发布密钥签名，不使用 debug key。密钥和密码文件必须放在仓库外，
+后续更新使用同一密钥；请单独安全备份。构建脚本不创建或上传密钥。
+
+The release APK uses a dedicated signing key. Keep and securely back up the keystore
+and password file outside Git; future updates must use the same key. The build script
+never creates or uploads credentials.
+
+```sh
+export RAWLAB_RELEASE_KEYSTORE="/absolute/private/path/rawlab-android-release.p12"
+export RAWLAB_RELEASE_PASSWORD_FILE="/absolute/private/path/store-password.txt"
+export JAVA_HOME="/path/to/jdk-17-or-21"
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+bash scripts/build-release.sh
+```
+
+产物为 `app/build/outputs/apk/release/RawLab-Android-release.apk`，包含签名验证和 16 KB 对齐检查。
+Release 与 debug 包使用相同应用 ID、不同签名，不能相互覆盖安装；先保存编辑并导出结果，
+再自行卸载旧 debug 包、安装 Release。卸载会删除应用私有数据，不会删除相册原图。
+
+The script verifies the APK signature and 16 KB alignment. Release and debug builds
+share an application ID but have different signing keys, so they cannot update each
+other. Save/export your work before manually uninstalling a debug build; uninstalling
+removes app-private data, not the original album photos.
+
 ## 验证 / Verification
 
 ```sh
@@ -97,8 +125,8 @@ The fixture is packaged only into the test APK. See [verification.md](verificati
   Albums show authorized, indexed RAW media; unindexed files use the document picker.
 - 进程被系统终止后，不恢复未保存的编辑或进行中的导出。长时间导出需保持应用前台。
   Process death does not resume edits or exports; keep the app foreground during export.
-- 没有应用商店发布、release 签名配置或真机性能承诺。debug APK 供本地验证。
-  No store publication or release signing setup; the debug APK is for local validation.
+- 通过 GitHub Release 提供签名 APK，尚未发布到应用商店；不承诺所有设备的性能。
+  Signed APKs are distributed through GitHub Releases, not an app store; performance varies by device.
 
 颜色处理遵循 [共享色彩约定](../lutools/docs/color-contract.md)。许可可从空编辑页的“开源许可”查看，
 具体来源见 `app/src/main/notices/ThirdPartyNotices.txt`。

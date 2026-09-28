@@ -128,10 +128,6 @@ private fun EditorCanvas(state: EditorState, compare: Boolean, modifier: Modifie
             state.operation == Operation.EXPORT -> stringResource(R.string.exporting)
             state.operation == Operation.IMPORT -> stringResource(R.string.importing)
             state.rendering -> stringResource(R.string.rendering)
-            state.preview != null -> {
-                val backend = if (state.preview.backend == 2) "GPU" else if (state.gpuEnabled) stringResource(R.string.gpu_fallback) else "CPU"
-                "$backend · ${state.preview.elapsedMs} ms"
-            }
             else -> null
         }
         status?.let { Text(it, Modifier.align(Alignment.TopStart).padding(12.dp).background(Color.Black.copy(alpha = .6f)).padding(6.dp),

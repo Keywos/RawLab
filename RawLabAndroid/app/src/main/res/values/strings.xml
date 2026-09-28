@@ -49,5 +49,4 @@
     <string name="collapse_adjustments">收起调整</string>
     <string name="expand_adjustments">展开调整</string>
     <string name="comparison_wipe">中性与胶片效果分界</string>
-    <string name="gpu_fallback">CPU · 回退</string>
 </resources>
