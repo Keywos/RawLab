@@ -15,15 +15,20 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
-#include <cctype>
+#include <exception>
+#include <iterator>
 #include <memory>
+#include <new>
 #include <string>
-#include <vector>
-#include <filesystem>
 #include <sys/stat.h>
+#include <system_error>
+#include <vector>
 
 struct sony2fuji_session {
     sony2fuji::GpuConfig gpu_config;
@@ -61,6 +66,41 @@ bool isEmptyString(const char* value) {
     return value == nullptr || value[0] == '\0';
 }
 
+
+struct FileMetadata {
+    uint64_t size = 0;
+    int64_t modified_seconds = 0;
+    uint64_t device = 0;
+    uint64_t inode = 0;
+};
+
+bool readFileMetadata(const char* path, FileMetadata* metadata) {
+    if (isEmptyString(path) || !metadata) {
+        return false;
+    }
+    struct stat info {};
+    if (::stat(path, &info) != 0) {
+        return false;
+    }
+    metadata->size = static_cast<uint64_t>(info.st_size);
+    metadata->modified_seconds = static_cast<int64_t>(info.st_mtime);
+    metadata->device = static_cast<uint64_t>(info.st_dev);
+    metadata->inode = static_cast<uint64_t>(info.st_ino);
+    return true;
+}
+
+bool isSameFile(const char* input_path, const char* output_path) {
+    if (isEmptyString(input_path) || isEmptyString(output_path)) {
+        return false;
+    }
+    if (std::strcmp(input_path, output_path) == 0) {
+        return true;
+    }
+    FileMetadata input;
+    FileMetadata output;
+    return readFileMetadata(input_path, &input) && readFileMetadata(output_path, &output) &&
+        input.device == output.device && input.inode == output.inode;
+}
 
 float clampFloat(float value, float low, float high) {
     return std::max(low, std::min(high, value));
@@ -347,14 +387,9 @@ sony2fuji_status validateRequest(
         if (isEmptyString(request->output_path)) {
             return SONY2FUJI_STATUS_INVALID_ARGUMENT;
         }
-        if (request->input_type == SONY2FUJI_INPUT_RAW) {
-            std::error_code error;
-            const auto inputPath = std::filesystem::u8path(request->input_path);
-            const auto outputPath = std::filesystem::u8path(request->output_path);
-            const bool sameFile = std::filesystem::equivalent(inputPath, outputPath, error);
-            if (sameFile || std::filesystem::weakly_canonical(inputPath) ==
-                std::filesystem::weakly_canonical(outputPath))
-                return SONY2FUJI_STATUS_INVALID_ARGUMENT;
+        if (request->input_type == SONY2FUJI_INPUT_RAW &&
+            isSameFile(request->input_path, request->output_path)) {
+            return SONY2FUJI_STATUS_INVALID_ARGUMENT;
         }
     } else if (request->output_target == SONY2FUJI_TARGET_BUFFER) {
         if (!out_buffer) {
@@ -685,14 +720,12 @@ sony2fuji_status loadRawImage(
     sony2fuji::ImageData& image, sony2fuji_color_space* space, bool* is_linear,
     bool copyImage = true
 ) {
-    std::error_code fileError;
-    const auto inputPath = std::filesystem::u8path(request.input_path);
-    const auto modified = std::filesystem::last_write_time(inputPath, fileError);
-    if (fileError) return SONY2FUJI_STATUS_IO_ERROR;
-    const auto fileSize = std::filesystem::file_size(inputPath, fileError);
-    if (fileError) return SONY2FUJI_STATUS_IO_ERROR;
+    FileMetadata metadata;
+    if (!readFileMetadata(request.input_path, &metadata)) {
+        return SONY2FUJI_STATUS_IO_ERROR;
+    }
     const std::string fileKey = std::string(request.input_path) + ":" +
-        std::to_string(modified.time_since_epoch().count()) + ":" + std::to_string(fileSize);
+        std::to_string(metadata.modified_seconds) + ":" + std::to_string(metadata.size);
     const bool interactive = session->interactive_preview && request.intent == SONY2FUJI_INTENT_PREVIEW &&
         request.output_target == SONY2FUJI_TARGET_BUFFER &&
         !(session->raw_exposure_mode == SONY2FUJI_EXPOSURE_PREVIEW && request.wb_mode == SONY2FUJI_WB_CAMERA);
