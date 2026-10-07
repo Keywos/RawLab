@@ -1,0 +1,292 @@
+name: Build RawLab iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      signing:
+        description: "IPA type: unsigned can be inspected/signed later; signed is installable with Apple credentials"
+        required: true
+        type: choice
+        options:
+          - unsigned
+          - signed
+        default: unsigned
+  push:
+    branches:
+      - main
+    paths:
+      - "RawLab/**"
+      - "lutools/**"
+      - ".github/workflows/build-ipa.yml"
+
+permissions:
+  contents: read
+
+env:
+  # Set repository variables IOS_BUNDLE_ID and RAWLAB_SIGNING_MODE if you want
+  # automatic signed builds on every push. Manual dispatch overrides the mode.
+  BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'com.example.RawLab' }}
+  SIGNING_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.signing || vars.RAWLAB_SIGNING_MODE || 'unsigned' }}
+  IOS_DEPLOYMENT_TARGET: "18.0"
+  LIBRAW_VERSION: "0.21.5"
+  LIBRAW_SHA256: "4b7f183a68f6e46e579e80ba32ab121687e75bd30a2e5566f34c36a6bcba1679"
+
+jobs:
+  build-ipa:
+    name: Build iOS IPA
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          cmake --version
+          brew --version
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          brew install cmake pkg-config
+
+      - name: Install Apple signing material
+        if: env.SIGNING_MODE == 'signed'
+        env:
+          IOS_CERTIFICATE_P12_B64: ${{ secrets.IOS_CERTIFICATE_P12_B64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_B64 }}
+          IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${IOS_CERTIFICATE_P12_B64:?Missing IOS_CERTIFICATE_P12_B64}"
+          : "${IOS_CERTIFICATE_PASSWORD:?Missing IOS_CERTIFICATE_PASSWORD}"
+          : "${IOS_PROVISIONING_PROFILE_B64:?Missing IOS_PROVISIONING_PROFILE_B64}"
+          : "${IOS_KEYCHAIN_PASSWORD:?Missing IOS_KEYCHAIN_PASSWORD}"
+
+          CERT_PATH="$RUNNER_TEMP/rawlab-signing.p12"
+          PROFILE_PATH="$RUNNER_TEMP/rawlab.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/rawlab-build.keychain-db"
+
+          printf '%s' "$IOS_CERTIFICATE_P12_B64" | base64 -D > "$CERT_PATH"
+          printf '%s' "$IOS_PROVISIONING_PROFILE_B64" | base64 -D > "$PROFILE_PATH"
+
+          security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$IOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$IOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          PROFILE_PLIST="$RUNNER_TEMP/rawlab-profile.plist"
+          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")
+          test -n "$PROFILE_UUID"
+          test -n "$PROFILE_NAME"
+
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          {
+            echo "SIGNING_KEYCHAIN=$KEYCHAIN_PATH"
+            echo "PROFILE_UUID=$PROFILE_UUID"
+            echo "PROFILE_NAME=$PROFILE_NAME"
+          } >> "$GITHUB_ENV"
+
+      - name: Download and build LibRaw for iOS
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCHIVE="$RUNNER_TEMP/LibRaw-${LIBRAW_VERSION}.tar.gz"
+          SRC_ROOT="$RUNNER_TEMP/libraw-source"
+          CMAKE_ROOT="$RUNNER_TEMP/libraw-cmake"
+          curl --fail --location --retry 3 \
+            "https://github.com/LibRaw/LibRaw/archive/refs/tags/${LIBRAW_VERSION}.tar.gz" \
+            --output "$ARCHIVE"
+          echo "${LIBRAW_SHA256}  ${ARCHIVE}" | shasum -a 256 -c -
+          mkdir -p "$SRC_ROOT" "$CMAKE_ROOT"
+          tar -xzf "$ARCHIVE" -C "$SRC_ROOT" --strip-components=1
+
+          cat > "$CMAKE_ROOT/CMakeLists.txt" <<'CMAKE'
+          cmake_minimum_required(VERSION 3.22)
+          project(LibRawIOS LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 17)
+          set(CMAKE_CXX_STANDARD_REQUIRED ON)
+          set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+          find_package(ZLIB REQUIRED)
+          file(GLOB_RECURSE LIBRAW_SOURCES CONFIGURE_DEPENDS
+            "${LIBRAW_SOURCE_DIR}/src/*.cpp")
+          list(FILTER LIBRAW_SOURCES EXCLUDE REGEX "_ph\\.cpp$")
+          add_library(raw STATIC ${LIBRAW_SOURCES})
+          target_include_directories(raw PUBLIC "${LIBRAW_SOURCE_DIR}")
+          target_compile_definitions(raw PRIVATE LIBRAW_NOTHREADS USE_ZLIB)
+          target_compile_options(raw PRIVATE -w)
+          target_link_libraries(raw PUBLIC ZLIB::ZLIB)
+          install(TARGETS raw ARCHIVE DESTINATION lib)
+          install(DIRECTORY "${LIBRAW_SOURCE_DIR}/libraw/" DESTINATION include/libraw)
+          CMAKE
+
+          build_libraw() {
+            local name="$1"
+            local arch="$2"
+            local sdk="$3"
+            local prefix="$GITHUB_WORKSPACE/lutools/build-ios-libraw/install/$name"
+            local build="$RUNNER_TEMP/libraw-build-$name"
+            rm -rf "$build" "$prefix"
+            cmake -S "$CMAKE_ROOT" -B "$build" -G Xcode \
+              -DLIBRAW_SOURCE_DIR="$SRC_ROOT" \
+              -DCMAKE_SYSTEM_NAME=iOS \
+              -DCMAKE_OSX_SYSROOT="$(xcrun --sdk "$sdk" --show-sdk-path)" \
+              -DCMAKE_OSX_ARCHITECTURES="$arch" \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+              -DCMAKE_INSTALL_PREFIX="$prefix" \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+            cmake --build "$build" --config Release
+            cmake --install "$build" --config Release
+            mkdir -p "$prefix/lib/pkgconfig"
+            cat > "$prefix/lib/pkgconfig/libraw.pc" <<PC
+          prefix=$prefix
+          exec_prefix=\${prefix}
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+          Name: libraw
+          Description: LibRaw for RawLab iOS
+          Version: ${LIBRAW_VERSION}
+          Libs: -L\${libdir} -lraw -lz
+          Cflags: -I\${includedir} -I\${includedir}/libraw
+          PC
+          }
+
+          build_libraw iphoneos-arm64 arm64 iphoneos
+          build_libraw iphonesimulator-arm64 arm64 iphonesimulator
+
+      - name: Build sony2fuji XCFramework
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_core() {
+            local name="$1"
+            local arch="$2"
+            local sdk="$3"
+            local pkgconfig="$GITHUB_WORKSPACE/lutools/build-ios-libraw/install/$name/lib/pkgconfig"
+            local build="$GITHUB_WORKSPACE/lutools/build-ios-$name"
+            rm -rf "$build"
+            PKG_CONFIG_PATH="$pkgconfig" cmake -S lutools -B "$build" -G Xcode \
+              -DCMAKE_SYSTEM_NAME=iOS \
+              -DCMAKE_OSX_SYSROOT="$(xcrun --sdk "$sdk" --show-sdk-path)" \
+              -DCMAKE_OSX_ARCHITECTURES="$arch" \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+              -DBUILD_SHARED_LIB=ON \
+              -DBUILD_CLI=OFF \
+              -DBUILD_TESTING=OFF \
+              -DIOS=ON \
+              -DSONY2FUJI_ENABLE_OPENMP=OFF \
+              -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO
+            cmake --build "$build" --config Release
+          }
+
+          build_core iphoneos-arm64 arm64 iphoneos
+          build_core iphonesimulator-arm64 arm64 iphonesimulator
+
+          rm -rf lutools/build-ios/sony2fuji.xcframework
+          xcodebuild -create-xcframework \
+            -framework lutools/build-ios-iphoneos-arm64/Release-iphoneos/sony2fuji.framework \
+            -framework lutools/build-ios-iphonesimulator-arm64/Release-iphonesimulator/sony2fuji.framework \
+            -output lutools/build-ios/sony2fuji.xcframework
+
+      - name: Archive RawLab
+        shell: bash
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="$RUNNER_TEMP/RawLab.xcarchive"
+          COMMON_ARGS=(
+            -project RawLab/RawLab.xcodeproj
+            -scheme RawLab
+            -configuration Release
+            -destination generic/platform=iOS
+            -archivePath "$ARCHIVE_PATH"
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+          )
+
+          if [ "$SIGNING_MODE" = signed ]; then
+            : "${IOS_TEAM_ID:?Missing IOS_TEAM_ID}"
+            xcodebuild archive "${COMMON_ARGS[@]}" \
+              CODE_SIGN_STYLE=Manual \
+              CODE_SIGNING_ALLOWED=YES \
+              DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+              CODE_SIGN_IDENTITY="Apple Distribution" \
+              PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+              | tee "$RUNNER_TEMP/xcode-archive.log"
+          else
+            xcodebuild archive "${COMMON_ARGS[@]}" \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              | tee "$RUNNER_TEMP/xcode-archive.log"
+          fi
+
+      - name: Export signed IPA
+        if: env.SIGNING_MODE == 'signed'
+        shell: bash
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          : "${IOS_TEAM_ID:?Missing IOS_TEAM_ID}"
+          EXPORT_DIR="$RUNNER_TEMP/export"
+          mkdir -p "$EXPORT_DIR"
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>ad-hoc</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>${IOS_TEAM_ID}</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key><string>${PROFILE_NAME}</string>
+            </dict>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/RawLab.xcarchive" \
+            -exportPath "$EXPORT_DIR" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            | tee "$RUNNER_TEMP/xcode-export.log"
+          cp "$EXPORT_DIR/RawLab.ipa" "$GITHUB_WORKSPACE/RawLab-signed.ipa"
+
+      - name: Package unsigned IPA
+        if: env.SIGNING_MODE != 'signed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/Payload"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$RUNNER_TEMP/RawLab.xcarchive/Products/Applications/RawLab.app" "$RUNNER_TEMP/Payload/RawLab.app"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/Payload" "$GITHUB_WORKSPACE/RawLab-unsigned.ipa"
+
+      - name: Upload IPA and build logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: RawLab-${{ env.SIGNING_MODE }}-ipa-${{ github.run_number }}
+          path: |
+            RawLab-*.ipa
+            ${{ runner.temp }}/xcode-archive.log
+            ${{ runner.temp }}/xcode-export.log
+          if-no-files-found: error
+          retention-days: 14
