@@ -2,15 +2,6 @@ name: Build RawLab iOS IPA
 
 on:
   workflow_dispatch:
-    inputs:
-      signing:
-        description: "IPA type: unsigned can be inspected/signed later; signed is installable with Apple credentials"
-        required: true
-        type: choice
-        options:
-          - unsigned
-          - signed
-        default: unsigned
   push:
     branches:
       - main
@@ -23,11 +14,8 @@ permissions:
   contents: read
 
 env:
-  # Set repository variables IOS_BUNDLE_ID and RAWLAB_SIGNING_MODE if you want
-  # automatic signed builds on every push. Manual dispatch overrides the mode.
-  BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'com.example.RawLab' }}
-  SIGNING_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.signing || vars.RAWLAB_SIGNING_MODE || 'unsigned' }}
-  IOS_DEPLOYMENT_TARGET: "18.0"
+  # The app keeps the repository's default bundle ID. Signers can replace it
+  # with their own App ID during the local re-signing step.
   LIBRAW_VERSION: "0.21.5"
   LIBRAW_SHA256: "4b7f183a68f6e46e579e80ba32ab121687e75bd30a2e5566f34c36a6bcba1679"
 
@@ -52,54 +40,6 @@ jobs:
         run: |
           set -euo pipefail
           brew install cmake pkg-config
-
-      - name: Install Apple signing material
-        if: env.SIGNING_MODE == 'signed'
-        env:
-          IOS_CERTIFICATE_P12_B64: ${{ secrets.IOS_CERTIFICATE_P12_B64 }}
-          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
-          IOS_PROVISIONING_PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_B64 }}
-          IOS_KEYCHAIN_PASSWORD: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          : "${IOS_CERTIFICATE_P12_B64:?Missing IOS_CERTIFICATE_P12_B64}"
-          : "${IOS_CERTIFICATE_PASSWORD:?Missing IOS_CERTIFICATE_PASSWORD}"
-          : "${IOS_PROVISIONING_PROFILE_B64:?Missing IOS_PROVISIONING_PROFILE_B64}"
-          : "${IOS_KEYCHAIN_PASSWORD:?Missing IOS_KEYCHAIN_PASSWORD}"
-
-          CERT_PATH="$RUNNER_TEMP/rawlab-signing.p12"
-          PROFILE_PATH="$RUNNER_TEMP/rawlab.mobileprovision"
-          KEYCHAIN_PATH="$RUNNER_TEMP/rawlab-build.keychain-db"
-
-          printf '%s' "$IOS_CERTIFICATE_P12_B64" | base64 -D > "$CERT_PATH"
-          printf '%s' "$IOS_PROVISIONING_PROFILE_B64" | base64 -D > "$PROFILE_PATH"
-
-          security create-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$IOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" \
-            -P "$IOS_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
-          security default-keychain -s "$KEYCHAIN_PATH"
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "$IOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          PROFILE_PLIST="$RUNNER_TEMP/rawlab-profile.plist"
-          security cms -D -i "$PROFILE_PATH" > "$PROFILE_PLIST"
-          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$PROFILE_PLIST")
-          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c 'Print :Name' "$PROFILE_PLIST")
-          test -n "$PROFILE_UUID"
-          test -n "$PROFILE_NAME"
-
-          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
-          {
-            echo "SIGNING_KEYCHAIN=$KEYCHAIN_PATH"
-            echo "PROFILE_UUID=$PROFILE_UUID"
-            echo "PROFILE_NAME=$PROFILE_NAME"
-          } >> "$GITHUB_ENV"
 
       - name: Download and build LibRaw for iOS
         shell: bash
@@ -204,89 +144,37 @@ jobs:
             -framework lutools/build-ios-iphonesimulator-arm64/Release-iphonesimulator/sony2fuji.framework \
             -output lutools/build-ios/sony2fuji.xcframework
 
-      - name: Archive RawLab
+      - name: Archive RawLab (unsigned)
         shell: bash
-        env:
-          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
         run: |
           set -euo pipefail
           ARCHIVE_PATH="$RUNNER_TEMP/RawLab.xcarchive"
-          COMMON_ARGS=(
-            -project RawLab/RawLab.xcodeproj
-            -scheme RawLab
-            -configuration Release
-            -destination generic/platform=iOS
-            -archivePath "$ARCHIVE_PATH"
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
-          )
+          xcodebuild archive \
+            -project RawLab/RawLab.xcodeproj \
+            -scheme RawLab \
+            -configuration Release \
+            -destination generic/platform=iOS \
+            -archivePath "$ARCHIVE_PATH" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee "$RUNNER_TEMP/xcode-archive.log"
 
-          if [ "$SIGNING_MODE" = signed ]; then
-            : "${IOS_TEAM_ID:?Missing IOS_TEAM_ID}"
-            xcodebuild archive "${COMMON_ARGS[@]}" \
-              CODE_SIGN_STYLE=Manual \
-              CODE_SIGNING_ALLOWED=YES \
-              DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
-              CODE_SIGN_IDENTITY="Apple Distribution" \
-              PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
-              | tee "$RUNNER_TEMP/xcode-archive.log"
-          else
-            xcodebuild archive "${COMMON_ARGS[@]}" \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGN_IDENTITY="" \
-              | tee "$RUNNER_TEMP/xcode-archive.log"
-          fi
-
-      - name: Export signed IPA
-        if: env.SIGNING_MODE == 'signed'
-        shell: bash
-        env:
-          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
-        run: |
-          set -euo pipefail
-          : "${IOS_TEAM_ID:?Missing IOS_TEAM_ID}"
-          EXPORT_DIR="$RUNNER_TEMP/export"
-          mkdir -p "$EXPORT_DIR"
-          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key><string>ad-hoc</string>
-            <key>signingStyle</key><string>manual</string>
-            <key>teamID</key><string>${IOS_TEAM_ID}</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>${BUNDLE_ID}</key><string>${PROFILE_NAME}</string>
-            </dict>
-          </dict>
-          </plist>
-          PLIST
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/RawLab.xcarchive" \
-            -exportPath "$EXPORT_DIR" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            | tee "$RUNNER_TEMP/xcode-export.log"
-          cp "$EXPORT_DIR/RawLab.ipa" "$GITHUB_WORKSPACE/RawLab-signed.ipa"
-
-      - name: Package unsigned IPA
-        if: env.SIGNING_MODE != 'signed'
-        shell: bash
+      - name: Package IPA for local signing
         run: |
           set -euo pipefail
           rm -rf "$RUNNER_TEMP/Payload"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$RUNNER_TEMP/RawLab.xcarchive/Products/Applications/RawLab.app" "$RUNNER_TEMP/Payload/RawLab.app"
           ditto -c -k --sequesterRsrc --keepParent \
-            "$RUNNER_TEMP/Payload" "$GITHUB_WORKSPACE/RawLab-unsigned.ipa"
+            "$RUNNER_TEMP/Payload" "$GITHUB_WORKSPACE/RawLab.ipa"
 
       - name: Upload IPA and build logs
         uses: actions/upload-artifact@v4
         with:
-          name: RawLab-${{ env.SIGNING_MODE }}-ipa-${{ github.run_number }}
+          name: RawLab-ipa-${{ github.run_number }}
           path: |
-            RawLab-*.ipa
+            RawLab.ipa
             ${{ runner.temp }}/xcode-archive.log
-            ${{ runner.temp }}/xcode-export.log
           if-no-files-found: error
           retention-days: 14
